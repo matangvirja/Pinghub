@@ -1,0 +1,208 @@
+name: pinghub
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pinghub
+      POSTGRES_PASSWORD: pinghub
+      POSTGRES_DB: pinghub
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pinghub -d pinghub"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging: *default-logging
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging: *default-logging
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: pinghub
+      RABBITMQ_DEFAULT_PASS: pinghub
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      # check_port_connectivity waits for the AMQP listener, not just the
+      # Erlang node (which is what `rabbitmq-diagnostics ping` checks).
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    logging: *default-logging
+
+  notification-mock:
+    build:
+      context: .
+      dockerfile: notification-mock/Dockerfile
+    environment:
+      SERVICE_NAME: notification-mock
+      NOTIFY_MODE: random
+      NOTIFY_FAIL_RATE: "0.3"
+      NOTIFY_LATENCY_MS: "50"
+    ports:
+      - "8002:8002"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8002/live', timeout=2)",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    logging: *default-logging
+
+  message-api:
+    build:
+      context: .
+      dockerfile: message-api/Dockerfile
+    environment:
+      SERVICE_NAME: message-api
+      DATABASE_URL: postgresql://pinghub:pinghub@postgres:5432/pinghub
+      REDIS_URL: redis://redis:6379/0
+      HISTORY_CACHE_TTL: "60"
+    ports:
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8001/live', timeout=2)",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    logging: *default-logging
+
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    environment:
+      SERVICE_NAME: worker
+      DATABASE_URL: postgresql://pinghub:pinghub@postgres:5432/pinghub
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://pinghub:pinghub@rabbitmq:5672/
+      NOTIFICATION_URL: http://notification-mock:8002
+      QUEUE_NAME: messages
+      NOTIFY_RETRY_ATTEMPTS: "3"
+      NOTIFY_RETRY_BASE_DELAY: "1.0"
+      CIRCUIT_FAILURE_THRESHOLD: "5"
+      CIRCUIT_RECOVERY_SECONDS: "30"
+      WORKER_PREFETCH: "5"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      notification-mock:
+        condition: service_healthy
+    restart: unless-stopped
+    # `docker compose up` starts two workers. Override with
+    # `docker compose up --scale worker=3` if you want three.
+    deploy:
+      replicas: 2
+    logging: *default-logging
+
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    environment:
+      SERVICE_NAME: gateway
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://pinghub:pinghub@rabbitmq:5672/
+      DATABASE_URL: postgresql://pinghub:pinghub@postgres:5432/pinghub
+      QUEUE_NAME: messages
+      MESSAGE_API_URL: http://message-api:8001
+      NOTIFICATION_URL: http://notification-mock:8002
+      RATE_LIMIT_CAPACITY: "10"
+      RATE_LIMIT_REFILL_PER_SEC: "1"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      message-api:
+        condition: service_healthy
+      notification-mock:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/live', timeout=2)",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    logging: *default-logging
+
+  # Optional: `docker compose --profile loadtest up locust`
+  locust:
+    image: locustio/locust:latest
+    profiles: ["loadtest"]
+    volumes:
+      - ./loadtest:/mnt/locust:ro
+      - ./loadtest/results:/tmp/results
+    ports:
+      - "8089:8089"
+    command:
+      [
+        "-f",
+        "/mnt/locust/locustfile.py",
+        "--host",
+        "http://gateway:8000",
+      ]
+    depends_on:
+      gateway:
+        condition: service_healthy
+    logging: *default-logging
+
+volumes:
+  pgdata:

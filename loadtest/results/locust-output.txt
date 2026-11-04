@@ -1,0 +1,114 @@
+
+=== PingHub load test counters ===
+accepted (202):      0
+rate limited (429):  0
+unexpected errors:   0
+==================================
+
+
+=== PingHub load test counters ===
+accepted (202):      2399
+rate limited (429):  3317
+unexpected errors:   0
+==================================
+
+
+=== PingHub load test counters ===
+accepted (202):      2406
+rate limited (429):  3205
+unexpected errors:   0
+==================================
+
+
+=== PingHub load test counters ===
+accepted (202):      2380
+rate limited (429):  3345
+unexpected errors:   0
+==================================
+
+
+=== PingHub load test counters ===
+accepted (202):      2419
+rate limited (429):  3321
+unexpected errors:   0
+==================================
+
+ Container pinghub-message-api-1 Running 
+ Container pinghub-gateway-1 Running 
+ Container pinghub-redis-1 Running 
+ Container pinghub-notification-mock-1 Running 
+ Container pinghub-rabbitmq-1 Running 
+ Container pinghub-postgres-1 Running 
+ Container pinghub-redis-1 Waiting 
+ Container pinghub-postgres-1 Waiting 
+ Container pinghub-redis-1 Healthy 
+ Container pinghub-postgres-1 Healthy 
+ Container pinghub-redis-1 Waiting 
+ Container pinghub-rabbitmq-1 Waiting 
+ Container pinghub-message-api-1 Waiting 
+ Container pinghub-notification-mock-1 Waiting 
+ Container pinghub-postgres-1 Waiting 
+ Container pinghub-rabbitmq-1 Healthy 
+ Container pinghub-message-api-1 Healthy 
+ Container pinghub-notification-mock-1 Healthy 
+ Container pinghub-postgres-1 Healthy 
+ Container pinghub-redis-1 Healthy 
+ Container pinghub-gateway-1 Waiting 
+ Container pinghub-gateway-1 Healthy 
+ Container pinghub-locust-run-7eb1f7ed72fb Creating 
+ Container pinghub-locust-run-7eb1f7ed72fb Created 
+[2026-11-04 19:39:52,642] cee32a6bc78e/INFO/locust.main: Starting Locust 2.47.0
+[2026-11-04 19:39:52,712] cee32a6bc78e/INFO/locust.runners: cee32a6bc78e_aa553234e1ac44fab3cbe12a2458c47d (index 0) reported as ready. 1 workers connected.
+[2026-11-04 19:39:52,713] cee32a6bc78e/INFO/locust.runners: cee32a6bc78e_524293e37628495fb4042c40360cc441 (index 1) reported as ready. 2 workers connected.
+[2026-11-04 19:39:52,713] cee32a6bc78e/INFO/locust.runners: cee32a6bc78e_0cb5cfcd1c43442f8c0f7d7192ce9eff (index 2) reported as ready. 3 workers connected.
+[2026-11-04 19:39:52,713] cee32a6bc78e/INFO/locust.runners: cee32a6bc78e_e350736d6398428f8f095df5ea93913c (index 3) reported as ready. 4 workers connected.
+[2026-11-04 19:39:53,712] cee32a6bc78e/INFO/locust.main: Run time limit set to 60 seconds
+[2026-11-04 19:39:53,713] cee32a6bc78e/INFO/locust.runners: Sending spawn jobs of 200 users at 50.00 spawn rate to 4 ready workers
+[2026-11-04 19:39:56,913] cee32a6bc78e/INFO/locust.runners: All users spawned: {"PingHubUser": 200} (200 total users)
+[2026-11-04 19:40:53,708] cee32a6bc78e/INFO/locust.main: --run-time limit reached, shutting down
+[2026-11-04 19:40:53,710] cee32a6bc78e/INFO/locust.runners: Got quit message from master, shutting down...
+[2026-11-04 19:40:53,710] cee32a6bc78e/INFO/locust.runners: Got quit message from master, shutting down...
+[2026-11-04 19:40:53,710] cee32a6bc78e/INFO/locust.runners: Got quit message from master, shutting down...
+[2026-11-04 19:40:53,712] cee32a6bc78e/INFO/locust.runners: Got quit message from master, shutting down...
+[2026-11-04 19:40:53,756] cee32a6bc78e/INFO/locust.main: Shutting down (exit code 0)
+[2026-11-04 19:40:53,756] cee32a6bc78e/INFO/locust.runners: Worker 'cee32a6bc78e_524293e37628495fb4042c40360cc441' (index 1) quit. 0 workers ready.
+[2026-11-04 19:40:53,757] cee32a6bc78e/INFO/locust.main: Shutting down (exit code 0)
+[2026-11-04 19:40:53,757] cee32a6bc78e/INFO/locust.main: Shutting down (exit code 0)
+[2026-11-04 19:40:53,757] cee32a6bc78e/INFO/locust.runners: Worker 'cee32a6bc78e_aa553234e1ac44fab3cbe12a2458c47d' (index 0) quit. 0 workers ready.
+[2026-11-04 19:40:53,757] cee32a6bc78e/INFO/locust.runners: Worker 'cee32a6bc78e_e350736d6398428f8f095df5ea93913c' (index 3) quit. 0 workers ready.
+[2026-11-04 19:40:53,758] cee32a6bc78e/INFO/locust.main: Shutting down (exit code 0)
+[2026-11-04 19:40:53,758] cee32a6bc78e/INFO/locust.runners: Worker 'cee32a6bc78e_0cb5cfcd1c43442f8c0f7d7192ce9eff' (index 2) quit. 0 workers ready.
+[2026-11-04 19:40:53,758] cee32a6bc78e/INFO/locust.runners: The last worker quit, stopping test.
+[2026-11-04 19:40:54,713] cee32a6bc78e/INFO/locust.main: Shutting down (exit code 0)
+Type     Name                                                                          # reqs      # fails |    Avg     Min     Max    Med |   req/s  failures/s
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+GET      GET /health                                                                     4606     0(0.00%) |     31       1     884      5 |   76.72        0.00
+GET      GET /history                                                                    9239     0(0.00%) |     20       2     325      9 |  153.88        0.00
+POST     POST /messages                                                                 22792     0(0.00%) |     15       2     519     10 |  379.62        0.00
+--------|----------------------------------------------------------------------------|-------|-------------|-------|-------|-------|-------|--------|-----------
+         Aggregated                                                                     36637     0(0.00%) |     18       1     884      8 |  610.22        0.00
+
+Response time percentiles (approximated)
+Type     Name                                                                                  50%    66%    75%    80%    90%    95%    98%    99%  99.9% 99.99%   100% # reqs
+--------|--------------------------------------------------------------------------------|--------|------|------|------|------|------|------|------|------|------|------|------
+GET      GET /health                                                                             5      6      7      9     78    250    340    430    670    880    880   4606
+GET      GET /history                                                                            9     26     33     36     44     54     80    120    260    330    330   9239
+POST     POST /messages                                                                         10     14     17     19     26     37     65    120    320    370    520  22792
+--------|--------------------------------------------------------------------------------|--------|------|------|------|------|------|------|------|------|------|------|------
+         Aggregated                                                                              8     13     18     22     36     49    120    240    460    670    880  36637
+
+Traceback (most recent call last):
+  File "src/gevent/greenlet.py", line 912, in gevent._gevent_cgreenlet.Greenlet.run
+  File "/opt/venv/lib/python3.14/site-packages/locust/stats.py", line 1170, in stats_writer
+    self.requests_csv_filehandle.seek(requests_csv_data_start)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: I/O operation on closed file.
+2026-11-04T19:40:55Z <Greenlet at 0x711e27804f40: <bound method StatsCSVFileWriter.stats_writer of <locust.stats.StatsCSVFileWriter object at 0x711e27824440>>> failed with ValueError
+
+[2026-11-04 19:40:55,316] cee32a6bc78e/CRITICAL/locust.main: Unhandled exception in greenlet: <Greenlet at 0x711e27804f40: <bound method StatsCSVFileWriter.stats_writer of <locust.stats.StatsCSVFileWriter object at 0x711e27824440>>>
+Traceback (most recent call last):
+  File "src/gevent/greenlet.py", line 912, in gevent._gevent_cgreenlet.Greenlet.run
+  File "/opt/venv/lib/python3.14/site-packages/locust/stats.py", line 1170, in stats_writer
+    self.requests_csv_filehandle.seek(requests_csv_data_start)
+    ^^^^^^^
+ValueError: I/O operation on closed file.

@@ -80,6 +80,29 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
+  # Applies every SQL file on every `docker compose up`. This is what makes the
+  # new columns/statuses appear on an existing pgdata volume, not just a fresh
+  # one (Postgres only runs /docker-entrypoint-initdb.d on first init).
+  migrate:
+    image: postgres:16-alpine
+    environment:
+      PGPASSWORD: pinghub
+    volumes:
+      - ./db/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        for file in /migrations/*.sql; do
+          echo "applying $$file"
+          psql -h postgres -U pinghub -d pinghub -v ON_ERROR_STOP=1 -f "$$file"
+        done
+    restart: "no"
+    logging: *default-logging
+
   message-api:
     build:
       context: .
@@ -96,6 +119,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test:
         [
@@ -135,6 +160,8 @@ services:
         condition: service_healthy
       notification-mock:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
     # `docker compose up` starts two workers. Override with
     # `docker compose up --scale worker=3` if you want three.
@@ -169,6 +196,8 @@ services:
         condition: service_healthy
       notification-mock:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test:
         [
@@ -180,6 +209,59 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    restart: unless-stopped
+    logging: *default-logging
+
+  # Operations API: dashboard metrics + the in-app Load Lab. Kept separate from
+  # the message path so an expensive load test cannot slow down real traffic.
+  ops-api:
+    build:
+      context: .
+      dockerfile: ops-api/Dockerfile
+    environment:
+      SERVICE_NAME: ops-api
+      DATABASE_URL: postgresql://pinghub:pinghub@postgres:5432/pinghub
+      GATEWAY_URL: http://gateway:8000
+      NOTIFICATION_URL: http://notification-mock:8002
+      RABBITMQ_API_URL: http://rabbitmq:15672
+      RABBITMQ_USER: pinghub
+      RABBITMQ_PASSWORD: pinghub
+    ports:
+      - "8003:8003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8003/live', timeout=2)",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    logging: *default-logging
+
+  # The end-user web app. Static files served by nginx, which also proxies
+  # /api/ to the gateway and /ops/ to ops-api. One origin, no CORS.
+  ui:
+    build:
+      context: .
+      dockerfile: ui/Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      gateway:
+        condition: service_healthy
+      ops-api:
+        condition: service_healthy
     restart: unless-stopped
     logging: *default-logging
 

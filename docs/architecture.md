@@ -1,27 +1,49 @@
 # PingHub Architecture and Data Flow
 
+PingHub has two faces on the same backend:
+
+- an **end-user web app** (`ui`, port 3000) for chatting, history, and read
+  receipts;
+- the original **HTTP API** (gateway, port 8000) used by scripts and Locust.
+
+Both go through the same gateway, RabbitMQ queue, worker pool, PostgreSQL and
+Redis. An **ops API** (port 8003) reads metrics and runs the in-app Load Lab.
+
 ## 1. Component diagram
 
 ```mermaid
 flowchart TD
-    C[Client / Locust] -->|POST /messages<br/>GET /history<br/>GET /messages/:id| G[API Gateway<br/>:8000<br/>4 uvicorn processes]
+    U[Web UI :3000<br/>chats · history · system] -->|/api/*| G[API Gateway :8000<br/>4 uvicorn processes]
+    U -->|/ops/*| O[Ops API :8003<br/>dashboard · load lab]
+    L[Locust / scripts] -->|POST /messages<br/>GET /history<br/>GET /messages/:id| G
+
     G -->|token bucket 429<br/>request_id| RL[(Redis<br/>rate buckets)]
+    G -->|resolve public ID| RL
     G -->|heavy: publish task| Q[(RabbitMQ<br/>queue: messages)]
-    G -->|light: proxy| M[Message API<br/>:8001]
+    G -->|light: proxy| M[Message API :8001<br/>profiles · conversations<br/>history · read receipts]
+
+    O -->|health checks| G
+    O -->|queue metrics| Q
+    O -->|provider control| N[Notification Mock :8002]
+    O -->|counters| DB
+    O -->|load generation| G
+
     M -->|cache-aside| R[(Redis<br/>history + task state)]
     M -->|cache miss| DB[(PostgreSQL<br/>users / messages / task_logs)]
+
     Q --> W1[Worker 1]
     Q --> W2[Worker 2]
     Q --> W3[Worker 3 optional]
     W1 --> DB
     W2 --> DB
     W3 --> DB
-    W1 --> N[Notification Mock<br/>:8002]
+    W1 --> N
     W2 --> N
     W3 --> N
     W1 -->|invalidate history<br/>heartbeat| R
     W2 -->|invalidate history<br/>heartbeat| R
     W3 -->|invalidate history<br/>heartbeat| R
+
     G -->|health check| M
     G -->|health check| N
     G -->|PING / TCP| RL
@@ -29,12 +51,16 @@ flowchart TD
     G -->|SELECT 1| DB
 ```
 
+The UI is served by nginx, which proxies `/api/` to the gateway and `/ops/` to
+the ops API. That gives the browser a single origin and removes CORS from the
+picture entirely.
+
 ## 2. Heavy request: `POST /messages`
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as Client
+    participant U as UI / Client
     participant G as Gateway
     participant Redis as Redis
     participant MQ as RabbitMQ
@@ -42,16 +68,17 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant N as Notification Mock
 
-    C->>G: POST /messages {sender, receiver, body}
+    U->>G: POST /messages {sender, receiver, body}
     G->>G: request_id = X-Request-ID or generated
+    G->>Redis: resolve sender/receiver (public ID or username)
     G->>Redis: atomic token bucket check (Lua)
     alt bucket empty
-        G-->>C: 429 Too Many Requests + Retry-After
+        G-->>U: 429 Too Many Requests + Retry-After
     else token available
         G->>G: task_id = uuid, message_id = uuid
         G->>Redis: SET task:<id> = QUEUED (TTL 24h)
         G->>MQ: publish persistent task
-        G-->>C: 202 Accepted {task_id, status: QUEUED}
+        G-->>U: 202 Accepted {task_id, status: QUEUED}
         MQ->>W: deliver task (request_id preserved)
         W->>DB: upsert users, message PROCESSING, task_log PROCESSING
         W->>Redis: task:<id> = PROCESSING
@@ -63,7 +90,7 @@ sequenceDiagram
         end
         alt success
             N-->>W: 200 sent
-            W->>DB: status DELIVERED
+            W->>DB: status DELIVERED, delivered_at = now()
         else retries exhausted / circuit open
             W->>DB: status FAILED + error
         end
@@ -73,12 +100,73 @@ sequenceDiagram
     end
 ```
 
-## 3. Light request: `GET /history?user=alice`
+`202` is returned before any database write. The queue, not the HTTP handler,
+absorbs the slow part.
+
+## 3. Read receipt flow
+
+A read receipt is a product-level state change, not another delivery attempt.
+It is created when the recipient opens the conversation while the tab is
+visible.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as Client
+    participant B as Bob (recipient UI)
+    participant G as Gateway
+    participant M as Message API
+    participant DB as PostgreSQL
+    participant R as Redis
+    participant A as Alice (sender UI)
+
+    B->>G: POST /users/bob/conversations/alice/read
+    G->>M: proxy (X-API-Key, X-Request-ID)
+    M->>DB: UPDATE messages SET status='READ', read_at=now()<br/>WHERE sender=alice AND receiver=bob AND status='DELIVERED'
+    M->>R: DEL history:bob, history:alice
+    M-->>B: 200 {marked: n}
+    A->>G: GET /users/alice/conversations/bob (poll)
+    G->>M: proxy
+    M->>R: conversation cache lookup
+    M->>DB: on miss, read thread
+    M-->>A: messages with status=READ and read_at
+```
+
+The sender's UI polls every ~2.6 seconds, so the tick changes from a single
+check to a blue double check with the read time. No WebSocket is required.
+
+## 4. Public ID resolution
+
+```mermaid
+flowchart LR
+    In[receiver = 7F3A9C21<br/>or alice] --> Lookup{8-char hex?}
+    Lookup -- yes --> Cache{Redis<br/>user:public:7F3A9C21}
+    Cache -- hit --> UUID[resolved user]
+    Cache -- miss --> DB[(users.public_id index)]
+    DB --> Cache
+    Lookup -- no --> Name[username path<br/>no extra call]
+```
+
+- `users.public_id` is 8 uppercase hex characters, generated by the database
+  default, unique and indexed.
+- Lookups accept a public ID, a username, or a UUID.
+- The gateway caches public-ID resolution in Redis, so a normal username send
+  costs nothing extra.
+- An unknown public ID returns `404` instead of being silently treated as a new
+  username.
+
+## 5. Conversation and history reads
+
+`GET /users/{me}/conversations` returns one row per peer with the last message
+and an **unread count** (`receiver=me AND status='DELIVERED'`).
+`GET /users/{me}/conversations/{peer}` returns the full thread and is what the
+chat screen renders.
+
+`GET /history?user=alice` keeps the original cache-aside behaviour:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client / UI
     participant G as Gateway
     participant M as Message API
     participant R as Redis
@@ -104,7 +192,10 @@ sequenceDiagram
     end
 ```
 
-## 4. Message status state machine
+`user` may be a username or a public ID. The UI renders `X-Cache` as the
+**redis cache: HIT/MISS** badge.
+
+## 6. Message status state machine
 
 ```mermaid
 stateDiagram-v2
@@ -112,11 +203,16 @@ stateDiagram-v2
     QUEUED --> PROCESSING: worker saves DB row
     PROCESSING --> DELIVERED: notification success
     PROCESSING --> FAILED: retries exhausted or circuit open
-    DELIVERED --> [*]
+    DELIVERED --> READ: recipient opens the conversation
+    READ --> [*]
     FAILED --> [*]
 ```
 
-## 5. Circuit breaker state machine
+`READ` counts as delivered. The worker's idempotency check treats an existing
+`DELIVERED` **or** `READ` row as done, so a RabbitMQ redelivery never resends a
+notification or downgrades the status.
+
+## 7. Circuit breaker state machine
 
 ```mermaid
 stateDiagram-v2
@@ -126,19 +222,65 @@ stateDiagram-v2
     HALF_OPEN --> OPEN: trial call fails
 ```
 
-## 6. Failure and recovery behaviour
+## 8. In-app Load Lab
+
+The Load Lab lives in `ops-api` so an expensive test cannot compete with real
+message traffic.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant UI as System screen
+    participant O as Ops API
+    participant P as Notification Mock
+    participant G as Gateway
+    participant Q as RabbitMQ
+    participant DB as PostgreSQL
+
+    UI->>O: POST /loadtest {users, duration_seconds}
+    O->>P: save mode, set always_succeed
+    O->>O: spawn N virtual users (own X-API-Key each)
+    loop while running
+        O->>G: POST /messages (9 of 10 requests)
+        O->>G: GET /history (1 of 10 requests)
+        O->>Q: sample queue depth once per second
+    end
+    O->>O: phase = draining
+    O->>Q: wait up to 90s for ready + unacked = 0
+    O->>DB: count DELIVERED / READ / FAILED for created ids
+    O->>P: restore previous mode
+    O-->>UI: verdict PASS / WARN / FAIL + percentiles + counts
+```
+
+Verdict rules:
+
+| Verdict | Condition |
+|---|---|
+| **PASS** | 0 server/network errors, every accepted message terminal, queue drained |
+| **WARN** | queue did not drain in 90s, or messages still `QUEUED`/`PROCESSING`, or accounting mismatch |
+| **FAIL** | any `5xx` or unstructured network failure |
+
+`429` is excluded from the failure count: it is the rate limiter doing its job,
+and it is reported separately.
+
+## 9. Failure and recovery behaviour
 
 | Failure | Behaviour |
 |---|---|
 | Client sends too fast | Gateway returns 429; bucket refills at 1 token/s |
-| Redis unavailable | Rate limiter falls back to in-process memory; history reads skip cache; `/health` reports Redis down |
+| Redis unavailable | Rate limiter falls back to in-process memory; public-ID cache and history reads skip cache; `/health` reports Redis down |
 | RabbitMQ unavailable | Gateway returns 503 for `POST /messages`; reads still work |
-| Worker crash before ack | RabbitMQ redelivers; worker is idempotent (`ON CONFLICT`) |
+| Worker crash before ack | RabbitMQ redelivers; worker is idempotent (`ON CONFLICT`, `READ`/`DELIVERED` short-circuit) |
 | Notification provider flaky | Up to 3 attempts with 1s then 2s backoff |
 | Notification provider down | Circuit opens after 5 failures; tasks fail fast; HALF_OPEN probes after 30s |
 | Database unavailable | Worker requeues the task; gateway `/health` reports PostgreSQL down |
+| Unknown public ID | Gateway returns 404 without publishing a task |
+| `message-api` down | Gateway reports it in `/health`; sends still queue, but chats/history return 503 |
+| `ops-api` down | Chat and history are unaffected; only the System screen and Load Lab break |
+| Browser tab closed mid-chat | No data loss: state lives in PostgreSQL; reopening the thread reloads it |
+| Duplicate read request | `UPDATE ... WHERE status='DELIVERED'` is idempotent; second call marks 0 rows |
 
-## 7. Logging and traceability
+## 10. Logging and traceability
 
 The gateway creates `request_id` and returns it as `X-Request-ID`. It is placed
 in the RabbitMQ task payload, so the worker logs the same id. A single request
@@ -159,15 +301,23 @@ Example:
 {"service":"worker","request_id":"r-101","event":"db_updated","status":"DELIVERED"}
 ```
 
-## 8. Why these choices?
+Read receipts and ops calls carry the same header, so `docker compose logs`
+can trace UI actions as well.
+
+## 11. Why these choices?
 
 | Decision | Reason |
 |---|---|
 | FastAPI | Async I/O fits a gateway and queue worker; automatic OpenAPI docs |
 | RabbitMQ | Durable queue, acknowledgements, redelivery, management UI |
 | PostgreSQL | Strong consistency for message/task state and history queries |
-| Redis | Sub-millisecond cache, atomic Lua token bucket, shared across replicas |
+| Redis | Sub-millisecond cache, atomic Lua token bucket, shared across replicas, public-ID cache |
 | Separate message-api | Keeps read traffic away from the write path; independently scalable |
+| Separate ops-api | Dashboard aggregation and load generation cannot slow down the message path |
+| Static UI served by nginx | No build step, no CORS, one origin for `/api/` and `/ops/` |
+| Public IDs | Short enough to share verbally; indexed; UUIDs remain supported internally |
+| `READ` status + timestamps | Gives the sender a real receipt and preserves when delivery/read happened |
+| Polling instead of WebSockets | Read paths are cheap and cached; simpler and survives reloads/proxies |
 | Two worker replicas | Shows horizontal scaling and survives one worker dying |
 | Four gateway processes | Uses multiple CPU cores while Redis keeps the limiter globally consistent |
 | Concurrent worker tasks | Prefetch bounds in-flight work; a retry sleep cannot stall the whole consumer |

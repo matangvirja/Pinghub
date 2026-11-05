@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#080b12" />
+  <title>PingHub — messages that survive the spike</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <svg class="sprite" aria-hidden="true">
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.4 9 9 0 0 1-3.8-.8L3 21l1.8-5.2A8.3 8.3 0 0 1 4 11.5 8.5 8.5 0 0 1 12.5 3 8.5 8.5 0 0 1 21 11.5Z"/></symbol>
+    <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 2.6-6.4"/><path d="M3 4v5h5"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-pulse" viewBox="0 0 24 24"><path d="M3 12h4l2-5 3 10 2-5h7"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="m3 11 18-8-8 18-2-8-8-2Z"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m4 12 5 5L20 6"/></symbol>
+    <symbol id="i-checkcheck" viewBox="0 0 24 24"><path d="m1.5 12.5 4.5 4.5L16 7"/><path d="m8.5 16.5 1 1L21 6"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.8a3.5 3.5 0 0 1 0 6.4"/><path d="M18 14.3a6.5 6.5 0 0 1 3.5 5.7"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 4v5h-5"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 21h16"/></symbol>
+    <symbol id="i-switch" viewBox="0 0 24 24"><path d="M4 7h13l-3-3"/><path d="M20 17H7l3 3"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5"/><path d="m11 18-6-6 6-6"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol>
+  </svg>
+
+  <!-- ===================== ONBOARDING ===================== -->
+  <div id="onboarding" class="onboarding hidden">
+    <div class="onboarding-card">
+      <div class="onboarding-brand">
+        <div class="brand-mark big"><span class="brand-dot"></span></div>
+        <div>
+          <h1>PingHub</h1>
+          <p>Gateway-based messaging &amp; notifications</p>
+        </div>
+      </div>
+
+      <div class="onboarding-grid">
+        <div class="onboarding-copy">
+          <h2>Talk to anyone.<br /><span>Watch the system keep up.</span></h2>
+          <p class="lede">
+            Create a profile, share your short ID, and send messages. Every message
+            travels through a real gateway, queue and worker pipeline.
+          </p>
+          <ul class="feature-list">
+            <li><span class="feature-ico">#</span><div><strong>Share a unique ID</strong><small>No email or phone number needed.</small></div></li>
+            <li><span class="feature-ico">✓✓</span><div><strong>Delivered &amp; read receipts</strong><small>See exactly when your message is read.</small></div></li>
+            <li><span class="feature-ico">⚡</span><div><strong>Survives traffic spikes</strong><small>The queue absorbs bursts; workers catch up.</small></div></li>
+            <li><span class="feature-ico">◎</span><div><strong>Live system lab</strong><small>Run a load test and get a PASS / FAIL verdict.</small></div></li>
+          </ul>
+          <div class="onboarding-note">
+            <svg><use href="#i-lock"></use></svg>
+            Demo identity only — no password, no real personal data.
+          </div>
+        </div>
+
+        <div class="onboarding-form-wrap">
+          <div class="panel onboarding-form">
+            <h3>Create your profile</h3>
+            <p class="muted small">Choose a name. You will get a short ID to share.</p>
+            <form id="createProfileForm">
+              <label class="field">
+                <span>Username</span>
+                <input id="usernameInput" name="username" autocomplete="off" maxlength="32"
+                       placeholder="e.g. alice" required />
+              </label>
+              <label class="field">
+                <span>Display name <em>optional</em></span>
+                <input id="displayNameInput" name="display_name" autocomplete="off" maxlength="64"
+                       placeholder="e.g. Alice Sharma" />
+              </label>
+              <button class="btn primary wide" type="submit" id="createProfileBtn">
+                Create profile <svg><use href="#i-arrow"></use></svg>
+              </button>
+              <div id="onboardingError" class="form-error hidden"></div>
+            </form>
+
+            <div id="savedProfilesWrap" class="saved-profiles hidden">
+              <div class="divider"><span>or continue as</span></div>
+              <div id="savedProfiles"></div>
+            </div>
+          </div>
+
+          <p class="tip">
+            <svg><use href="#i-users"></use></svg>
+            Demo tip: create two profiles, then open each in its own browser tab.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== APP ===================== -->
+  <div id="app" class="app hidden">
+    <aside class="rail">
+      <div class="brand-mark" title="PingHub"><span class="brand-dot"></span></div>
+      <nav class="rail-nav">
+        <button class="rail-btn active" data-view="chat" title="Chats" aria-label="Chats">
+          <svg><use href="#i-chat"></use></svg><span>Chats</span>
+        </button>
+        <button class="rail-btn" data-view="history" title="History" aria-label="History">
+          <svg><use href="#i-history"></use></svg><span>History</span>
+        </button>
+        <button class="rail-btn" data-view="system" title="System" aria-label="System">
+          <svg><use href="#i-pulse"></use></svg><span>System</span>
+        </button>
+      </nav>
+      <div class="rail-bottom">
+        <button class="rail-profile" id="railProfileBtn" title="Your profile">
+          <span id="railAvatar" class="avatar tiny"></span>
+          <span class="presence-dot"></span>
+        </button>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <!-- ------------------- CHAT ------------------- -->
+      <section id="view-chat" class="view view-chat active">
+        <aside class="chat-sidebar">
+          <div class="sidebar-top">
+            <div>
+              <p class="eyebrow">Workspace</p>
+              <h2>Messages</h2>
+            </div>
+            <button class="icon-btn accent" id="newChatBtn" title="New chat" aria-label="New chat">
+              <svg><use href="#i-plus"></use></svg>
+            </button>
+          </div>
+
+          <label class="search-box">
+            <svg><use href="#i-search"></use></svg>
+            <input id="conversationSearch" placeholder="Search conversations" autocomplete="off" />
+          </label>
+
+          <div class="list-label">
+            <span>Conversations</span>
+            <span id="conversationCount" class="count-pill">0</span>
+          </div>
+          <div id="conversationList" class="conversation-list"></div>
+
+          <div class="sidebar-footer">
+            <div class="my-id-card">
+              <div class="my-id-top">
+                <span class="muted tiny">Your unique ID</span>
+                <button class="copy-mini" id="copyIdBtn" title="Copy your ID">
+                  <svg><use href="#i-copy"></use></svg>
+                </button>
+              </div>
+              <div class="mono id-value" id="myPublicId">—</div>
+              <div class="my-id-name" id="myUsername">—</div>
+            </div>
+            <button class="text-btn tiny" id="enableAlertsBtn">
+              <svg><use href="#i-bell"></use></svg> Enable desktop alerts
+            </button>
+          </div>
+        </aside>
+
+        <main class="chat-main">
+          <div id="chatEmpty" class="chat-empty">
+            <div class="empty-orb"><svg><use href="#i-chat"></use></svg></div>
+            <h2>Pick a conversation</h2>
+            <p>Choose someone from the left, or start a new chat with their unique ID.</p>
+            <button class="btn primary" id="emptyNewChatBtn">
+              <svg><use href="#i-plus"></use></svg> New chat
+            </button>
+            <div class="empty-id">
+              <span>Your ID</span>
+              <strong class="mono" id="emptyMyId">—</strong>
+              <button class="copy-mini" id="emptyCopyIdBtn"><svg><use href="#i-copy"></use></svg></button>
+            </div>
+          </div>
+
+          <div id="threadPanel" class="thread-panel hidden">
+            <header class="thread-header">
+              <button class="icon-btn mobile-back" id="mobileBackBtn" aria-label="Back">
+                <svg><use href="#i-back"></use></svg>
+              </button>
+              <span id="threadAvatar" class="avatar"></span>
+              <div class="thread-title">
+                <h3 id="threadName">—</h3>
+                <div class="thread-sub">
+                  <span class="mono" id="threadId">—</span>
+                  <span class="dot-sep">•</span>
+                  <span class="read-receipts"><span class="live-dot"></span> read receipts on</span>
+                </div>
+              </div>
+              <div class="thread-actions">
+                <button class="icon-btn" id="threadRefreshBtn" title="Refresh">
+                  <svg><use href="#i-refresh"></use></svg>
+                </button>
+                <button class="icon-btn" id="threadHistoryBtn" title="View history">
+                  <svg><use href="#i-history"></use></svg>
+                </button>
+              </div>
+            </header>
+
+            <div id="messageList" class="message-list"></div>
+
+            <footer class="composer-wrap">
+              <div id="rateHint" class="rate-hint hidden"></div>
+              <form id="composer" class="composer">
+                <textarea id="messageInput" rows="1" maxlength="4000"
+                          placeholder="Write a message…  (Enter to send, Shift+Enter for a new line)"></textarea>
+                <div class="composer-side">
+                  <span id="charCount" class="char-count">0 / 4000</span>
+                  <button type="submit" class="send-btn" id="sendBtn" aria-label="Send message">
+                    <svg><use href="#i-send"></use></svg>
+                  </button>
+                </div>
+              </form>
+              <p class="composer-hint">Messages are queued first, then delivered by a worker — the UI never blocks on the provider.</p>
+            </footer>
+          </div>
+        </main>
+      </section>
+
+      <!-- ------------------- HISTORY ------------------- -->
+      <section id="view-history" class="view view-history">
+        <header class="page-header">
+          <div>
+            <p class="eyebrow">Delivery log</p>
+            <h1>History</h1>
+            <p class="muted">Every message you sent or received, with its delivery state.</p>
+          </div>
+          <div class="page-actions">
+            <span id="cacheBadge" class="badge cache hidden">cache: —</span>
+            <button class="btn ghost" id="exportHistoryBtn"><svg><use href="#i-download"></use></svg> Export JSON</button>
+            <button class="btn ghost" id="refreshHistoryBtn"><svg><use href="#i-refresh"></use></svg> Refresh</button>
+          </div>
+        </header>
+
+        <div class="stat-grid" id="historyStats"></div>
+
+        <div class="panel history-panel">
+          <div class="toolbar">
+            <label class="search-box grow">
+              <svg><use href="#i-search"></use></svg>
+              <input id="historySearch" placeholder="Search message text or person" autocomplete="off" />
+            </label>
+            <select id="historyStatusFilter" class="select">
+              <option value="ALL">All statuses</option>
+              <option value="QUEUED">Queued</option>
+              <option value="PROCESSING">Processing</option>
+              <option value="DELIVERED">Delivered</option>
+              <option value="READ">Read</option>
+              <option value="FAILED">Failed</option>
+            </select>
+            <select id="historyDirectionFilter" class="select">
+              <option value="ALL">Sent + received</option>
+              <option value="SENT">Sent only</option>
+              <option value="RECEIVED">Received only</option>
+            </select>
+          </div>
+
+          <div class="lookup-row">
+            <div>
+              <strong>Look up another user</strong>
+              <p class="muted small">Enter their unique ID or username to view their message history.</p>
+            </div>
+            <form id="historyLookupForm" class="lookup-form">
+              <input id="historyLookupInput" class="input mono" placeholder="7F3A9C21" autocomplete="off" />
+              <button class="btn primary" type="submit">View</button>
+              <button class="btn ghost" type="button" id="historyResetBtn">Me</button>
+            </form>
+          </div>
+
+          <div id="historyTableWrap" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <!-- ------------------- SYSTEM ------------------- -->
+      <section id="view-system" class="view view-system">
+        <header class="page-header">
+          <div>
+            <p class="eyebrow">Operations</p>
+            <h1>System &amp; Load Lab</h1>
+            <p class="muted">Live health, queue depth, and a one-click robustness test.</p>
+          </div>
+          <div class="page-actions">
+            <span class="badge live" id="systemLiveBadge"><span class="live-dot"></span> live</span>
+            <button class="btn ghost" id="refreshSystemBtn"><svg><use href="#i-refresh"></use></svg> Refresh</button>
+          </div>
+        </header>
+
+        <div id="systemBanner" class="system-banner">
+          <div class="banner-orb"></div>
+          <div>
+            <strong id="systemBannerTitle">Connecting…</strong>
+            <p id="systemBannerText" class="muted small">Reading health from the gateway.</p>
+          </div>
+        </div>
+
+        <div id="nodeGrid" class="node-grid"></div>
+        <div id="metricGrid" class="metric-grid"></div>
+
+        <div class="grid-2">
+          <div class="panel chart-panel">
+            <div class="panel-head">
+              <div>
+                <h3>Queue depth</h3>
+                <p class="muted small">Messages buffered in RabbitMQ. Spikes are the queue doing its job.</p>
+              </div>
+              <span class="mono small" id="queueNow">—</span>
+            </div>
+            <canvas id="queueChart" class="chart"></canvas>
+            <div class="chart-legend"><span class="legend queue"></span> messages in queue</div>
+          </div>
+
+          <div class="panel provider-panel">
+            <div class="panel-head">
+              <div>
+                <h3>Notification provider</h3>
+                <p class="muted small">Simulate a healthy or broken third-party provider.</p>
+              </div>
+              <span class="badge" id="providerModeBadge">—</span>
+            </div>
+            <div class="provider-stats" id="providerStats"></div>
+            <div class="provider-actions">
+              <button class="btn ghost provider-btn" data-mode="always_succeed">Healthy</button>
+              <button class="btn ghost provider-btn" data-mode="random" data-rate="0.3">30% failures</button>
+              <button class="btn ghost danger provider-btn" data-mode="always_fail">Always fail</button>
+            </div>
+            <div class="panel-foot">
+              <button class="text-btn tiny" id="resetProviderBtn"><svg><use href="#i-refresh"></use></svg> Reset provider counters</button>
+              <span class="muted tiny">Retries: 1s → 2s → FAILED</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel load-panel">
+          <div class="panel-head load-head">
+            <div>
+              <h3>Load Lab <span class="badge experimental">in-app</span></h3>
+              <p class="muted small">
+                Runs virtual users against the real gateway. Every user has its own rate-limit bucket.
+                At the end you get a PASS / FAIL robustness verdict.
+              </p>
+            </div>
+            <div class="load-form">
+              <label class="mini-field"><span>Users</span><input id="loadUsers" type="number" min="1" max="500" value="100" /></label>
+              <label class="mini-field"><span>Seconds</span><input id="loadDuration" type="number" min="5" max="120" value="20" /></label>
+              <button class="btn primary" id="startLoadBtn"><svg><use href="#i-bolt"></use></svg> Start test</button>
+              <button class="btn ghost danger hidden" id="stopLoadBtn">Stop</button>
+            </div>
+          </div>
+
+          <div id="loadVerdict" class="verdict hidden"></div>
+
+          <div class="load-stats" id="loadStats"></div>
+
+          <div class="load-chart-wrap">
+            <div class="chart-legend spread">
+              <span><span class="legend rps"></span> requests / sec</span>
+              <span><span class="legend queue"></span> queue depth</span>
+              <span class="mono small" id="loadPhase">idle</span>
+            </div>
+            <canvas id="loadChart" class="chart tall"></canvas>
+          </div>
+
+          <div class="load-explainer">
+            <div><strong>What does PASS mean?</strong><span>0 server errors, every accepted message delivered or permanently failed, and the queue fully drains.</span></div>
+            <div><strong>Why are there 429s?</strong><span>The token-bucket limiter rejected excess requests. That is protection working, not a failure.</span></div>
+            <div><strong>What if WARN / FAIL?</strong><span>The queue did not drain or the gateway returned 5xx. Add workers or reduce the arrival rate.</span></div>
+          </div>
+        </div>
+
+        <div class="panel recent-panel">
+          <div class="panel-head">
+            <div>
+              <h3>Recent tasks</h3>
+              <p class="muted small">The last 8 worker tasks and their attempts.</p>
+            </div>
+          </div>
+          <div id="recentTasks" class="table-wrap compact"></div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ===================== MODALS ===================== -->
+  <div id="newChatModal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-head">
+        <div><p class="eyebrow">New conversation</p><h3>Find someone</h3></div>
+        <button class="icon-btn modal-close" data-close="newChatModal"><svg><use href="#i-x"></use></svg></button>
+      </div>
+
+      <div class="tabs">
+        <button class="tab active" data-tab="id">By unique ID</button>
+        <button class="tab" data-tab="directory">Directory</button>
+      </div>
+
+      <div id="tab-id" class="tab-panel active">
+        <p class="muted small">Ask the other person for the ID shown on their sidebar, or use their username.</p>
+        <form id="lookupChatForm" class="lookup-form">
+          <input id="lookupChatInput" class="input mono" placeholder="7F3A9C21 or alice" autocomplete="off" />
+          <button class="btn primary" type="submit">Open chat</button>
+        </form>
+        <div id="lookupChatError" class="form-error hidden"></div>
+        <div class="demo-hint">
+          <strong>Demo with two people</strong>
+          <span>Create Alice and Bob, then open each profile in a separate browser tab. Send from one and watch the other receive it.</span>
+        </div>
+      </div>
+
+      <div id="tab-directory" class="tab-panel">
+        <label class="search-box">
+          <svg><use href="#i-search"></use></svg>
+          <input id="directorySearch" placeholder="Search by name or ID" autocomplete="off" />
+        </label>
+        <div id="directoryList" class="directory-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="profileModal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-head">
+        <div><p class="eyebrow">Your account</p><h3>Profile</h3></div>
+        <button class="icon-btn modal-close" data-close="profileModal"><svg><use href="#i-x"></use></svg></button>
+      </div>
+
+      <div id="profileCard" class="profile-card"></div>
+
+      <div class="modal-section">
+        <div class="section-title">Switch profile</div>
+        <div id="profileList" class="profile-list"></div>
+        <div class="profile-actions">
+          <button class="btn ghost" id="newProfileBtn"><svg><use href="#i-plus"></use></svg> New profile</button>
+          <button class="btn ghost danger" id="signOutBtn"><svg><use href="#i-switch"></use></svg> Sign out of this tab</button>
+        </div>
+      </div>
+
+      <p class="tip inside"><svg><use href="#i-users"></use></svg> Each browser tab can hold a different active profile. Useful for read-receipt demos.</p>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

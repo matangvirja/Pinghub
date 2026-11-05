@@ -92,7 +92,7 @@ async def save_processing(
                 )
                 existing = await cursor.fetchone()
 
-                if existing is not None and existing["status"] == "DELIVERED":
+                if existing is not None and existing["status"] in ("DELIVERED", "READ"):
                     await _upsert_task_log(
                         cursor,
                         task_id=task_id,
@@ -140,10 +140,16 @@ async def finalize(
             await cursor.execute(
                 """
                 UPDATE messages
-                SET status = %s, updated_at = now()
+                SET status = %s,
+                    delivered_at = CASE
+                        WHEN %s = 'DELIVERED'
+                        THEN COALESCE(delivered_at, now())
+                        ELSE delivered_at
+                    END,
+                    updated_at = now()
                 WHERE id = %s
                 """,
-                (status, message_id),
+                (status, status, message_id),
             )
             await cursor.execute(
                 """

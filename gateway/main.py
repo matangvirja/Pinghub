@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -21,7 +22,7 @@ from datetime import datetime, timezone
 import aio_pika
 import httpx
 import redis.asyncio as redis
-from fastapi import FastAPI, Query, Request
+from fastapi import Body, FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
@@ -46,6 +47,9 @@ HOP_BY_HOP_HEADERS = {
     "upgrade",
     "content-length",
 }
+
+# A shareable public id looks like 7F3A9C21.
+PUBLIC_ID_RE = re.compile(r"^[A-Fa-f0-9]{8}$")
 
 
 class MessageIn(BaseModel):
@@ -292,7 +296,29 @@ async def health(request: Request) -> JSONResponse:
 @app.post("/messages", status_code=202)
 async def create_message(payload: MessageIn, request: Request):
     request_id = request.state.request_id
-    client_key = _client_key(request, payload.sender)
+
+    # A caller may address a person by public id instead of username. Resolve
+    # only id-shaped values, so a normal send adds no database or HTTP lookup.
+    sender, sender_found = await _canonical_identifier(request, payload.sender)
+    receiver, receiver_found = await _canonical_identifier(request, payload.receiver)
+    if not sender_found:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "detail": f"Sender {payload.sender} not found",
+                "request_id": request_id,
+            },
+        )
+    if not receiver_found:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "detail": f"Recipient {payload.receiver} not found",
+                "request_id": request_id,
+            },
+        )
+
+    client_key = _client_key(request, sender)
 
     # 1. Rate limit first: reject excess traffic before doing any work.
     limit = await request.app.state.limiter.check(client_key)
@@ -328,8 +354,8 @@ async def create_message(payload: MessageIn, request: Request):
         "task_id": task_id,
         "message_id": message_id,
         "status": "QUEUED",
-        "sender": payload.sender,
-        "receiver": payload.receiver,
+        "sender": sender,
+        "receiver": receiver,
         "body": payload.body,
         "attempts": 0,
         "error": None,
@@ -350,8 +376,8 @@ async def create_message(payload: MessageIn, request: Request):
     queue_payload = {
         "task_id": task_id,
         "message_id": message_id,
-        "sender": payload.sender,
-        "receiver": payload.receiver,
+        "sender": sender,
+        "receiver": receiver,
         "body": payload.body,
         "request_id": request_id,
         "created_at": created_at,
@@ -427,6 +453,165 @@ async def _upstream_get(client: httpx.AsyncClient, url: str, **kwargs) -> httpx.
         return await client.get(url, **kwargs)
     except httpx.TransportError:
         return await client.get(url, **kwargs)
+
+
+async def _proxy_get(
+    request: Request,
+    path: str,
+    *,
+    params: dict | None = None,
+) -> Response:
+    """Proxy a light read request to message-api."""
+
+    try:
+        upstream = await _upstream_get(
+            request.app.state.http,
+            f"{settings.message_api_url}{path}",
+            params=params,
+            headers={"X-Request-ID": request.state.request_id},
+        )
+    except httpx.HTTPError as exc:
+        log.error("message_api_unavailable", extra={"error": str(exc), "path": path})
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "message-api unavailable",
+                "request_id": request.state.request_id,
+            },
+        )
+    return await _forward_response(request, upstream)
+
+
+async def _proxy_json(
+    request: Request,
+    method: str,
+    path: str,
+    *,
+    payload: dict | None = None,
+) -> Response:
+    """Proxy a small write request to message-api."""
+
+    try:
+        upstream = await request.app.state.http.request(
+            method,
+            f"{settings.message_api_url}{path}",
+            json=payload,
+            headers={"X-Request-ID": request.state.request_id},
+        )
+    except httpx.HTTPError as exc:
+        log.error("message_api_unavailable", extra={"error": str(exc), "path": path})
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "message-api unavailable",
+                "request_id": request.state.request_id,
+            },
+        )
+    return await _forward_response(request, upstream)
+
+
+async def _canonical_identifier(request: Request, value: str) -> tuple[str, bool]:
+    """Turn a public id into the canonical username.
+
+    Plain usernames are returned untouched, so the normal send path does not
+    add an internal HTTP call. Only values shaped like a public id are looked
+    up, and the result is cached in Redis for five minutes.
+    """
+
+    if not PUBLIC_ID_RE.fullmatch(value):
+        return value, True
+
+    cache_key = f"pinghub:userresolve:{value.upper()}"
+    try:
+        cached = await request.app.state.redis.get(cache_key)
+        if cached:
+            return cached, True
+    except Exception:
+        pass
+
+    try:
+        response = await request.app.state.http.get(
+            f"{settings.message_api_url}/users/{value}",
+            headers={"X-Request-ID": request.state.request_id},
+        )
+    except httpx.HTTPError:
+        # message-api is down; degrade to the old behaviour instead of blocking
+        # message publishing. The worker will upsert the name it receives.
+        return value, True
+
+    if response.status_code == 404:
+        return value, False
+    if response.status_code != 200:
+        return value, True
+
+    try:
+        username = response.json().get("username") or value
+    except Exception:
+        return value, True
+
+    try:
+        await request.app.state.redis.set(cache_key, username, ex=300)
+    except Exception:
+        pass
+    return username, True
+
+
+@app.post("/users")
+async def create_user_proxy(request: Request, payload: dict = Body(...)):
+    return await _proxy_json(request, "POST", "/users", payload=payload)
+
+
+@app.get("/users")
+async def list_users_proxy(
+    request: Request,
+    q: str | None = Query(default=None, max_length=64),
+    limit: int = Query(default=50, ge=1, le=100),
+):
+    params: dict = {"limit": limit}
+    if q:
+        params["q"] = q
+    return await _proxy_get(request, "/users", params=params)
+
+
+@app.get("/users/{identifier}")
+async def get_user_proxy(identifier: str, request: Request):
+    return await _proxy_get(request, f"/users/{identifier}")
+
+
+@app.get("/users/{identifier}/conversations")
+async def list_conversations_proxy(
+    identifier: str,
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100),
+):
+    return await _proxy_get(
+        request,
+        f"/users/{identifier}/conversations",
+        params={"limit": limit},
+    )
+
+
+@app.get("/users/{identifier}/conversations/{peer}")
+async def get_thread_proxy(
+    identifier: str,
+    peer: str,
+    request: Request,
+    limit: int = Query(default=200, ge=1, le=300),
+):
+    return await _proxy_get(
+        request,
+        f"/users/{identifier}/conversations/{peer}",
+        params={"limit": limit},
+    )
+
+
+@app.post("/users/{identifier}/conversations/{peer}/read")
+async def mark_read_proxy(identifier: str, peer: str, request: Request):
+    return await _proxy_json(
+        request,
+        "POST",
+        f"/users/{identifier}/conversations/{peer}/read",
+    )
 
 
 @app.get("/messages/{task_id}")

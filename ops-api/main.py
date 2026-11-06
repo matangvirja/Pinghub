@@ -50,6 +50,22 @@ RABBITMQ_API_URL = os.getenv("RABBITMQ_API_URL", "http://rabbitmq:15672")
 RABBITMQ_USER = os.getenv("RABBITMQ_USER", "pinghub")
 RABBITMQ_PASSWORD = os.getenv("RABBITMQ_PASSWORD", "pinghub")
 
+# Optional: the LAN address of the host, written to .env by scripts/start.ps1.
+# It lets the UI show the exact URL to open on a phone or another laptop.
+PINGHUB_LAN_IP = os.getenv("PINGHUB_LAN_IP", "").strip()
+PINGHUB_UI_PORT = int(os.getenv("PINGHUB_UI_PORT", "3000"))
+
+
+def _network_info() -> dict:
+    ui_url = (
+        f"http://{PINGHUB_LAN_IP}:{PINGHUB_UI_PORT}" if PINGHUB_LAN_IP else None
+    )
+    return {
+        "lan_ip": PINGHUB_LAN_IP or None,
+        "ui_port": PINGHUB_UI_PORT,
+        "ui_url": ui_url,
+    }
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -374,8 +390,16 @@ async def overview() -> dict:
         "queue": queue,
         "database": db,
         "provider": provider,
+        "network": _network_info(),
         "loadtest": RUN.snapshot(),
     }
+
+
+@app.get("/network")
+async def network() -> dict:
+    """The address other devices on the same Wi-Fi can use."""
+
+    return _network_info()
 
 
 @app.get("/queue")

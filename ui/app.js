@@ -27,6 +27,7 @@ const state = {
   queueSeries: [],
   pollTimer: null,
   systemTimer: null,
+  share: null,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -152,6 +153,15 @@ async function api(path, options = {}, base = API) {
     throw error;
   }
   return { data, headers: response.headers, status: response.status };
+}
+
+function friendlyError(error) {
+  if (error.status === 503 || /message-api unavailable/i.test(error.message || "")) {
+    return "The backend is still starting up (message-api is not ready yet). "
+      + "Wait 15–20 seconds and try again. If it keeps happening, run "
+      + "\"docker compose ps\" and make sure message-api is healthy.";
+  }
+  return error.message;
 }
 
 /* --------------------------------------------------------------------------
@@ -299,7 +309,7 @@ async function handleCreateProfile(event) {
     $("#createProfileForm").reset();
     await enterApp(user);
   } catch (error) {
-    errorBox.textContent = error.message;
+    errorBox.textContent = friendlyError(error);
     errorBox.classList.remove("hidden");
   } finally {
     button.disabled = false;
@@ -1113,6 +1123,14 @@ async function openNewChat() {
   $("#lookupChatInput").value = "";
   openModal("newChatModal");
   switchTab("id");
+
+  const hint = $("#demoHintText");
+  if (hint) {
+    hint.textContent = isLocalOrigin()
+      ? "On another device, open the Wi-Fi address shown under \"Use on another device\" below your ID. Create a profile there, then share unique IDs."
+      : `On another device, open ${location.origin} on the same Wi-Fi, create a profile there, then share unique IDs.`;
+  }
+
   await loadDirectory("");
 }
 
@@ -1180,6 +1198,10 @@ function renderProfileModal() {
       <p class="muted small">@${esc(state.me.username)}</p>
     </div>`;
   $("#copyProfileIdBtn").addEventListener("click", () => copyText(state.me.public_id, "Your ID copied"));
+  $("#shareProfileBtn")?.addEventListener("click", () => {
+    closeModal("profileModal");
+    openShareModal();
+  });
 
   const profiles = loadProfiles();
   $("#profileList").innerHTML = profiles.map((user) => `
@@ -1200,6 +1222,55 @@ function renderProfileModal() {
       if (user) { setActive(user); location.reload(); }
     });
   });
+}
+
+/* --------------------------------------------------------------------------
+   Multi-device sharing
+   -------------------------------------------------------------------------- */
+function isLocalOrigin() {
+  return ["localhost", "127.0.0.1", "::1", "[::1]"].includes(location.hostname);
+}
+
+async function deviceInfo() {
+  let network = null;
+  try {
+    network = (await api("/network", {}, OPS)).data;
+  } catch { /* ops-api can be down; fall back to the current origin */ }
+
+  const uiPort = network?.ui_port || 3000;
+  let url = location.origin;
+  let note = "Other devices on the same Wi-Fi use this address.";
+
+  if (isLocalOrigin()) {
+    if (network?.ui_url) {
+      url = network.ui_url;
+      note = "localhost only works on this computer. Use the address above on your phone or another laptop.";
+    } else if (network?.lan_ip) {
+      url = `http://${network.lan_ip}:${uiPort}`;
+      note = "localhost only works on this computer. Use the address above on your phone or another laptop.";
+    } else {
+      url = `http://<this-computer-ip>:${uiPort}`;
+      note = "Find this computer's Wi-Fi IPv4 address (run ipconfig or scripts\\start.ps1), then open http://<that-ip>:"
+        + `${uiPort} on the other device. Running scripts\\start.ps1 prints the exact address.`;
+    }
+  }
+
+  return { url, note, network, local: isLocalOrigin() };
+}
+
+async function openShareModal() {
+  if (!state.me) return;
+  openModal("shareModal");
+  $("#shareId").textContent = state.me.public_id || "—";
+
+  const info = await deviceInfo();
+  const invite = `Join me on PingHub.\nAddress: ${info.url}\nMy unique ID: ${state.me.public_id}\n`
+    + "Open the address on the same Wi-Fi, create a profile, then choose New chat and paste my ID.";
+  state.share = { ...info, invite };
+
+  $("#shareUrl").textContent = info.url;
+  $("#shareUrlNote").textContent = info.note;
+  $("#shareMessage").textContent = invite;
 }
 
 /* --------------------------------------------------------------------------
@@ -1305,6 +1376,10 @@ function bindEvents() {
   $("#conversationSearch").addEventListener("input", renderConversations);
   $("#copyIdBtn").addEventListener("click", () => copyText(state.me?.public_id, "Your ID copied"));
   $("#emptyCopyIdBtn").addEventListener("click", () => copyText(state.me?.public_id, "Your ID copied"));
+  $("#shareDeviceBtn").addEventListener("click", openShareModal);
+  $("#copyShareUrlBtn").addEventListener("click", () => copyText(state.share?.url || $("#shareUrl").textContent, "Address copied"));
+  $("#copyShareIdBtn").addEventListener("click", () => copyText(state.me?.public_id, "Your ID copied"));
+  $("#copyShareMessageBtn").addEventListener("click", () => copyText(state.share?.invite, "Invite copied"));
   $("#enableAlertsBtn").addEventListener("click", enableAlerts);
   $("#railProfileBtn").addEventListener("click", openProfile);
 

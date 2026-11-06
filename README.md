@@ -19,24 +19,56 @@ starting the stack and for the optional engineering tools.
 
 ## 1. Open the app
 
-### Start everything
+> **`http://localhost:3000` is the web app.** `http://localhost:8000` is the
+> raw JSON API, not the UI. If you see JSON, you opened the wrong port.
 
-```bash
-docker compose up --build
+### Start everything (Windows, recommended)
+
+Double-click **`start.cmd`** in the project folder. It starts Docker Compose,
+waits until the backend is actually healthy, then prints two addresses:
+
+```text
+On this computer:     http://localhost:3000
+On other devices:     http://192.168.1.25:3000
 ```
 
-First build takes a few minutes; later starts are fast. When Compose reports the
-services as healthy, open:
+The first build takes a few minutes. Later starts are much faster. The script
+also saves the detected LAN address to `.env` so the in-app **“Use on another
+device”** panel shows the exact phone/laptop URL.
+
+### Start everything (terminal)
+
+```powershell
+# Windows PowerShell (recommended: prints the LAN URL and waits for health)
+powershell -ExecutionPolicy Bypass -File scripts\start.ps1
+
+# Any platform, plain Compose
+docker compose up -d --build
+```
+
+When the stack is healthy, open:
 
 | What | URL |
 |---|---|
 | **PingHub web app** | **http://localhost:3000** |
+| **PingHub from a phone / other laptop** | **http://\<this-computer-ip\>:3000** |
 | Gateway health | http://localhost:8000/health |
 | Gateway API docs | http://localhost:8000/docs |
 | Ops API docs | http://localhost:8003/docs |
 | RabbitMQ management | http://localhost:15672 (pinghub / pinghub) |
 | Message API health | http://localhost:8001/health |
 | Notification mock | http://localhost:8002/health |
+
+If a phone or another laptop cannot open the LAN address, allow the port once
+from an **Administrator** PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\allow-lan.ps1
+```
+
+This adds a Windows Firewall inbound rule for TCP 3000 on Private networks. See
+[Section 15](#15-troubleshooting) if it still fails (guest Wi-Fi / AP isolation
+blocks device-to-device traffic).
 
 ### Create your profile
 
@@ -64,6 +96,30 @@ Read receipts need two identities. Each browser tab keeps its own active profile
 > Tip: keep both tabs in the same browser window and switch between them. The
 > app polls the server every few seconds; the tab you are viewing refreshes
 > immediately.
+
+### Demo two people on two devices (same Wi-Fi)
+
+The backend still runs only on this computer. Other devices just need a browser.
+
+1. Run **`start.cmd`** (or `scripts\start.ps1`). Note the **“On other devices”**
+   address it prints, for example `http://192.168.1.25:3000`.
+2. Connect the phone/laptop to the **same Wi-Fi network**.
+3. On the other device, open that address in any browser. Nothing is installed
+   on the phone.
+4. Create a profile on that device. Each device has its own saved profiles; the
+   unique ID is what connects people.
+5. On this computer, click **Use on another device** below your ID to see the
+   address, your unique ID, and a ready-made invite message. Send that invite.
+6. The other person clicks **New chat**, pastes your 8-character ID, and sends.
+7. You see the unread badge; open the chat and the sender sees **Read**.
+
+`localhost` never works from another device — it means “this device”. Use the
+detected LAN address instead. The in-app panel deliberately swaps `localhost`
+for the LAN URL.
+
+> Security note: PingHub is a course demo with no passwords. Anyone on your
+> Wi-Fi who knows an 8-character ID can start a chat with that profile. Do not
+> expose port 3000 to the public internet.
 
 ### What each screen does
 
@@ -210,6 +266,7 @@ The UI shows that header as the **redis cache: HIT/MISS** badge on History.
 ```text
 PingHub/
 ├── docker-compose.yml
+├── start.cmd                     # double-click launcher for Windows
 ├── README.md
 ├── .env.example
 ├── common/
@@ -245,6 +302,8 @@ PingHub/
 │   ├── locustfile.py
 │   └── results/
 ├── scripts/
+│   ├── start.ps1                 # start, wait for health, print local + LAN URL
+│   ├── allow-lan.ps1             # one-time Windows Firewall rule for TCP 3000
 │   ├── smoke_test.py             # 7-check end-to-end test
 │   ├── failure_demo.py           # retries + circuit breaker demo
 │   └── run_load_test.py          # Locust + queue-depth monitor
@@ -323,6 +382,22 @@ not a bug.
 Profiles are saved in `localStorage`, but the **active** profile is in
 `sessionStorage`. Open a second tab to be a second person, or use the profile
 menu to switch. Signing out only affects the current tab.
+
+### Same Wi-Fi, different devices
+
+Click **Use on another device** under your unique ID (or from the profile
+modal). The panel shows:
+
+- the address to open on the other device (the LAN URL, not `localhost`),
+- your 8-character unique ID,
+- a ready-made invite message with both, ready to copy into WhatsApp or SMS.
+
+Every browser/device has its own saved profile list — two devices can even use
+the same username, because messages are addressed by unique ID. The backend,
+database, queue, and workers all stay on the host computer.
+
+Profiles are intentionally passwordless. This is a classroom demo, so keep port
+3000 on your private network.
 
 ---
 
@@ -623,9 +698,21 @@ All settings are environment variables with sane defaults. See `.env.example`.
 | `NOTIFICATION_URL` | `http://notification-mock:8002` | ops-api |
 | `RABBITMQ_API_URL` | `http://rabbitmq:15672` | ops-api |
 | `RABBITMQ_USER` / `RABBITMQ_PASSWORD` | `pinghub` / `pinghub` | ops-api |
+| `PINGHUB_LAN_IP` | auto-detected | ops-api (shown by **Use on another device**) |
+| `PINGHUB_UI_PORT` | `3000` | ui (host port) + ops-api (share URL) |
 
-The UI itself has no runtime configuration: nginx routes `/api/` and `/ops/` by
-service name inside the Compose network.
+`scripts/start.ps1` writes `PINGHUB_LAN_IP` and `PINGHUB_UI_PORT` to `.env`
+automatically. The UI has no other runtime configuration: nginx routes `/api/`
+and `/ops/` by service name inside the Compose network.
+
+To use a different host port (for example when 3000 is taken):
+
+```powershell
+$env:PINGHUB_UI_PORT = "3100"
+powershell -ExecutionPolicy Bypass -File scripts\start.ps1 -NoBuild
+```
+
+Then open `http://localhost:3100` (and `http://<lan-ip>:3100`).
 
 ---
 
@@ -720,8 +807,8 @@ not block the other four. This is what lets two replicas drain ~113 messages/s.
 | Minute | Show |
 |---|---|
 | 0–1 | `docs/architecture.png`; explain UI -> gateway -> queue -> worker -> DB |
-| 1–2 | `docker compose ps`; open `http://localhost:3000`; create Alice and Bob |
-| 2–4 | Alice sends by Bob's unique ID; Bob's tab shows the unread badge; open it; Alice sees **Read** |
+| 1–2 | Run `start.cmd`; open `http://localhost:3000`; optionally show a phone on the printed LAN URL |
+| 2–4 | Alice sends by Bob's unique ID (other tab or phone); Bob sees the unread badge; open it; Alice sees **Read** |
 | 4–5 | History: filters, cache **MISS** then **HIT**, lookup by another user's ID |
 | 5–7 | System -> Load Lab: 50 users / 10 s; show PASS, latency, queue chart, drain time |
 | 7–8 | Provider -> Always fail; send a message; show retries and **Failed** with Resend; restore Healthy |
@@ -731,6 +818,47 @@ not block the other four. This is what lets two replicas drain ~113 messages/s.
 ---
 
 ## 15. Troubleshooting
+
+**I opened `:8000` and see JSON, not the app**
+`:8000` is the gateway API (and `/docs` is its Swagger page). The web app is at
+**`http://localhost:3000`**.
+
+**The onboarding form says “message-api unavailable”**
+The UI is up but the backend is still starting. Wait 15–20 seconds and submit
+again. Check with:
+
+```powershell
+docker compose ps
+Invoke-RestMethod http://localhost:3000/api/health
+```
+
+All nodes should be `up`. `scripts\start.ps1` and `start.cmd` now wait for this
+health check before declaring success.
+
+**A phone or another laptop cannot open the LAN URL**
+1. Confirm both devices are on the **same Wi-Fi** (not one on Wi-Fi and one on
+   mobile data, and not a “guest” network — guest networks often block
+   device-to-device traffic).
+2. Use the address printed under **“On other devices”**, not `localhost`.
+3. Allow the port once as Administrator:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\allow-lan.ps1
+   ```
+
+4. Allow Docker Desktop through Windows Firewall if prompted.
+5. As a test from the other device, open `http://<lan-ip>:8000/health`; if that
+   also fails, the network/firewall is blocking the host, not PingHub.
+
+**The page looks stale after an update**
+The app shell and assets are served with `Cache-Control: no-store`. If an old
+tab still shows the previous version, press **Ctrl+F5** once. Then create/open
+a chat and retry.
+
+**The System page does not scroll**
+Fixed in the current UI: the app grid is locked to the viewport and the System
+view has its own internal scrollbar. If you still see the old behaviour, press
+**Ctrl+F5** to drop cached `styles.css`.
 
 **The UI shows “Cannot reach the server”**
 Check `docker compose ps`. The `gateway` and `ops-api` must be healthy; `ui`
@@ -752,8 +880,9 @@ start. Check `docker compose logs migrate`; it should end with the `ALTER TABLE`
 and `CREATE INDEX` lines. You do not need to delete the volume.
 
 **Port already in use**
-Stop the other process or change the host side of the port mapping in
-`docker-compose.yml` (`3000`, `8000`, `8001`, `8002`, `8003`).
+For the UI, set `PINGHUB_UI_PORT` (see [Section 11](#11-configuration)) instead
+of editing `docker-compose.yml`. For the backend ports (`8000`, `8001`, `8002`,
+`8003`), stop the other process or change the host side of the mapping.
 
 **I want a completely fresh database**
 

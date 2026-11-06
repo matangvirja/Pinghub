@@ -226,6 +226,9 @@ services:
       RABBITMQ_API_URL: http://rabbitmq:15672
       RABBITMQ_USER: pinghub
       RABBITMQ_PASSWORD: pinghub
+      # Filled in by scripts/start.ps1 so the UI can show the LAN address.
+      PINGHUB_LAN_IP: ${PINGHUB_LAN_IP:-}
+      PINGHUB_UI_PORT: ${PINGHUB_UI_PORT:-3000}
     ports:
       - "8003:8003"
     depends_on:
@@ -256,7 +259,9 @@ services:
       context: .
       dockerfile: ui/Dockerfile
     ports:
-      - "3000:80"
+      # Bound on every interface so phones/laptops on the same Wi-Fi can open
+      # http://<this-computer-ip>:3000. Override the port with PINGHUB_UI_PORT.
+      - "0.0.0.0:${PINGHUB_UI_PORT:-3000}:80"
     depends_on:
       gateway:
         condition: service_healthy

@@ -1,13 +1,18 @@
 # PingHub Web App — End-User Guide
 
 This guide is for someone who has never used a terminal. You only need a web
-browser. Someone technical starts the stack once with:
+browser. Someone technical starts the stack once by **double-clicking
+`start.cmd`** (or running `docker compose up -d --build`). The launcher prints:
 
-```bash
-docker compose up --build
+```text
+On this computer:     http://localhost:3000
+On other devices:     http://192.168.1.25:3000
 ```
 
-Then open **http://localhost:3000**.
+Open the first address on the computer that runs PingHub. Open the second
+address on a phone or another laptop connected to the **same Wi-Fi**.
+
+> `:8000` is the API, not the app. If you see JSON, use `:3000` instead.
 
 ---
 
@@ -119,6 +124,31 @@ and allow notifications when the browser asks.
 
 Each tab keeps its own active profile, so this works even in the same browser.
 
+### Two-person demo on two devices (phones/laptops)
+
+1. Put both devices on the **same Wi-Fi network**.
+2. On the device that runs PingHub, double-click **`start.cmd`** and read the
+   **“On other devices”** address (for example `http://192.168.1.25:3000`).
+3. Open that address in the browser on the other device. Nothing is installed
+   on the phone — the browser is the app.
+4. Create a profile on each device.
+5. Click **Use on another device** below your unique ID. Copy the invite; it
+   contains the address and your 8-character ID.
+6. The other person clicks **New chat**, pastes the ID, and sends.
+7. The recipient sees an unread badge; opening the chat turns the sender's tick
+   into **Read**.
+
+`localhost` only means “this device”, so never use it on the phone. If the
+address does not open, the technical operator may need to allow TCP 3000 through
+the Windows firewall once:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\allow-lan.ps1
+```
+
+Guest Wi-Fi networks sometimes block device-to-device traffic; use a normal home
+or hotspot network in that case.
+
 ---
 
 ## 5. Unread badges
@@ -164,7 +194,9 @@ the browser.
 
 ## 7. System dashboard
 
-Click **System** in the left rail. It updates every 2 seconds.
+Click **System** in the left rail. It updates every 2 seconds. The page scrolls
+inside the content area, so scroll down to reach the **Load Lab** below the
+provider panel.
 
 ### Node health
 
@@ -273,7 +305,25 @@ but the messages are on the server and can be found by username or unique ID.
 
 **Why do two tabs show different people?**
 The active profile is stored per tab (`sessionStorage`) so you can demo two
-people at once. The saved profile list is shared (`localStorage`).
+people at once. The saved profile list is shared (`localStorage`). Different
+devices/browsers have independent saved profiles.
+
+**A phone cannot open the address**
+Use the **“On other devices”** address, not `localhost`, and join the same
+Wi-Fi. On Windows, run `scripts\allow-lan.ps1` once as Administrator to allow
+TCP 3000. Guest Wi-Fi often blocks device-to-device traffic.
+
+**The form says “message-api unavailable”**
+The backend is still starting. Wait 15–20 seconds and try again. The launcher
+now waits for the full health check before it reports ready.
+
+**The page looks old after an update**
+Press **Ctrl+F5** once. The app is served with `Cache-Control: no-store`, so
+later updates load normally.
+
+**The System page did not scroll before**
+It does now: the content area has its own scrollbar. Hard-refresh once if an old
+tab still behaves differently.
 
 **How do I start over?**
 Profile menu -> **Sign out of this tab**, or create a new profile. To wipe the

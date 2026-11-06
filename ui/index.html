@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#080b12" />
   <title>PingHub — messages that survive the spike</title>
-  <link rel="stylesheet" href="styles.css" />
+  <!-- ?v=2 breaks browsers that cached the pre-multi-device assets. Bump when
+       the CSS/JS change; nginx also sends Cache-Control: no-store for these. -->
+  <link rel="stylesheet" href="styles.css?v=2" />
 </head>
 <body>
   <svg class="sprite" aria-hidden="true">
@@ -158,6 +160,9 @@
               <div class="mono id-value" id="myPublicId">—</div>
               <div class="my-id-name" id="myUsername">—</div>
             </div>
+            <button class="text-btn tiny" id="shareDeviceBtn">
+              <svg><use href="#i-users"></use></svg> Use on another device
+            </button>
             <button class="text-btn tiny" id="enableAlertsBtn">
               <svg><use href="#i-bell"></use></svg> Enable desktop alerts
             </button>
@@ -407,8 +412,8 @@
         </form>
         <div id="lookupChatError" class="form-error hidden"></div>
         <div class="demo-hint">
-          <strong>Demo with two people</strong>
-          <span>Create Alice and Bob, then open each profile in a separate browser tab. Send from one and watch the other receive it.</span>
+          <strong>Works across phones, tabs and laptops</strong>
+          <span id="demoHintText">Open the same PingHub address on another device on your Wi-Fi, create a profile there, and share your unique IDs.</span>
         </div>
       </div>
 
@@ -435,17 +440,70 @@
         <div class="section-title">Switch profile</div>
         <div id="profileList" class="profile-list"></div>
         <div class="profile-actions">
+          <button class="btn ghost" id="shareProfileBtn"><svg><use href="#i-users"></use></svg> Use on another device</button>
           <button class="btn ghost" id="newProfileBtn"><svg><use href="#i-plus"></use></svg> New profile</button>
           <button class="btn ghost danger" id="signOutBtn"><svg><use href="#i-switch"></use></svg> Sign out of this tab</button>
         </div>
       </div>
 
-      <p class="tip inside"><svg><use href="#i-users"></use></svg> Each browser tab can hold a different active profile. Useful for read-receipt demos.</p>
+      <p class="tip inside"><svg><use href="#i-users"></use></svg> Each browser tab or device holds its own active profile. Share your unique ID to start a chat.</p>
+    </div>
+  </div>
+
+  <div id="shareModal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-head">
+        <div><p class="eyebrow">Multi-device</p><h3>Chat from another device</h3></div>
+        <button class="icon-btn modal-close" data-close="shareModal"><svg><use href="#i-x"></use></svg></button>
+      </div>
+
+      <p class="muted small">
+        Anyone on the same Wi-Fi can open this address, create their own profile,
+        and message you using your unique ID. No app install and no account needed.
+      </p>
+
+      <div class="share-block">
+        <div class="section-title">1 · Open this address on the other device</div>
+        <div class="share-row">
+          <code id="shareUrl">—</code>
+          <button class="copy-mini" id="copyShareUrlBtn" title="Copy address"><svg><use href="#i-copy"></use></svg></button>
+        </div>
+        <p id="shareUrlNote" class="muted tiny" style="margin-top:6px; line-height:1.5;"></p>
+      </div>
+
+      <div class="share-block">
+        <div class="section-title">2 · Share your unique ID</div>
+        <div class="share-row">
+          <code id="shareId">—</code>
+          <button class="copy-mini" id="copyShareIdBtn" title="Copy ID"><svg><use href="#i-copy"></use></svg></button>
+        </div>
+      </div>
+
+      <div class="share-block">
+        <div class="section-title">Or copy one ready-made invite</div>
+        <p id="shareMessage" class="share-text">—</p>
+        <button class="btn primary wide" id="copyShareMessageBtn" style="margin-top:8px;">
+          <svg><use href="#i-copy"></use></svg> Copy invite message
+        </button>
+      </div>
+
+      <ol class="share-steps">
+        <li>The other person joins the <strong>same Wi-Fi network</strong>.</li>
+        <li>They open the address above in any browser.</li>
+        <li>They create their own profile on that device.</li>
+        <li>They choose <strong>New chat</strong>, paste your ID, and send.</li>
+      </ol>
+
+      <p class="tip inside">
+        <svg><use href="#i-lock"></use></svg>
+        Demo identity only. Anyone with your 8-character ID can start a chat, so
+        share it only with people you want to message you.
+      </p>
     </div>
   </div>
 
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=2"></script>
 </body>
 </html>

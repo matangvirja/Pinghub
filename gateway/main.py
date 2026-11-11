@@ -11,6 +11,7 @@ Responsibilities:
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import math
 import re
@@ -18,6 +19,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 import aio_pika
 import httpx
@@ -257,6 +259,139 @@ def _rate_limit_headers(result) -> dict[str, str]:
     }
 
 
+def _is_internal_request(request: Request) -> bool:
+    supplied = request.headers.get("x-internal-token")
+    return bool(supplied) and hmac.compare_digest(supplied, settings.internal_token)
+
+
+def _auth_headers(request: Request) -> dict[str, str]:
+    """Headers for an internal message-api call.
+
+    The employee's own bearer token is forwarded, so message-api remains the
+    single source of truth for session validation and ownership.
+    """
+
+    headers = {"X-Request-ID": request.state.request_id}
+    authorization = request.headers.get("authorization")
+    if authorization:
+        headers["Authorization"] = authorization
+    if _is_internal_request(request):
+        headers["X-Internal-Token"] = settings.internal_token
+    return headers
+
+
+async def _require_auth(request: Request) -> tuple[dict | None, Response | None]:
+    """Return the employee session, or a ready-made 401/403/503 response."""
+
+    if _is_internal_request(request):
+        return {"internal": True, "user": None}, None
+
+    authorization = request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        return None, JSONResponse(
+            status_code=401,
+            content={
+                "detail": "Sign in required",
+                "request_id": request.state.request_id,
+            },
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    try:
+        upstream = await _upstream_get(
+            request.app.state.http,
+            f"{settings.message_api_url}/auth/me",
+            headers={
+                "Authorization": authorization,
+                "X-Request-ID": request.state.request_id,
+            },
+        )
+    except httpx.HTTPError as exc:
+        log.error("auth_api_unavailable", extra={"error": str(exc)})
+        return None, JSONResponse(
+            status_code=503,
+            content={
+                "detail": "Authentication service unavailable",
+                "request_id": request.state.request_id,
+            },
+        )
+
+    if upstream.status_code in (401, 403):
+        try:
+            detail = upstream.json().get("detail") or "Sign in required"
+        except Exception:
+            detail = "Sign in required"
+        return None, JSONResponse(
+            status_code=upstream.status_code,
+            content={"detail": detail, "request_id": request.state.request_id},
+            headers={"WWW-Authenticate": "Bearer"} if upstream.status_code == 401 else None,
+        )
+    if upstream.status_code != 200:
+        return None, JSONResponse(
+            status_code=503,
+            content={
+                "detail": "Authentication service unavailable",
+                "request_id": request.state.request_id,
+            },
+        )
+
+    try:
+        user = upstream.json().get("user")
+    except Exception:
+        user = None
+    if not user:
+        return None, JSONResponse(
+            status_code=401,
+            content={
+                "detail": "Sign in required",
+                "request_id": request.state.request_id,
+            },
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return {"internal": False, "user": user}, None
+
+
+def _claims_match(session: dict, identifier: str) -> bool:
+    if session.get("internal"):
+        return True
+    user = session.get("user") or {}
+    value = (identifier or "").strip().lower()
+    return value in {
+        (user.get("username") or "").lower(),
+        (user.get("public_id") or "").lower(),
+        (user.get("id") or "").lower(),
+    }
+
+
+def _limit_key(request: Request, session: dict | None, fallback: str | None) -> str:
+    """Authenticated employees get one bucket; synthetic clients use X-API-Key."""
+
+    if session is not None and not session.get("internal"):
+        user = session.get("user") or {}
+        return f"user:{(user.get('username') or fallback or 'unknown').lower()}"
+    return _client_key(request, fallback)
+
+
+async def _guard(
+    request: Request, identifier: str | None = None
+) -> tuple[dict | None, Response | None]:
+    """Require a session and, when given, that it owns ``identifier``."""
+
+    session, error = await _require_auth(request)
+    if error is not None:
+        return None, error
+    if identifier is not None and not _claims_match(session, identifier):
+        return None, JSONResponse(
+            status_code=403,
+            content={
+                "detail": "You can only access your own conversations.",
+                "request_id": request.state.request_id,
+            },
+        )
+    return session, None
+
+
 @app.get("/")
 async def root() -> dict:
     return {
@@ -297,28 +432,67 @@ async def health(request: Request) -> JSONResponse:
 async def create_message(payload: MessageIn, request: Request):
     request_id = request.state.request_id
 
-    # A caller may address a person by public id instead of username. Resolve
-    # only id-shaped values, so a normal send adds no database or HTTP lookup.
-    sender, sender_found = await _canonical_identifier(request, payload.sender)
-    receiver, receiver_found = await _canonical_identifier(request, payload.receiver)
-    if not sender_found:
-        return JSONResponse(
-            status_code=404,
-            content={
-                "detail": f"Sender {payload.sender} not found",
-                "request_id": request_id,
-            },
-        )
-    if not receiver_found:
-        return JSONResponse(
-            status_code=404,
-            content={
-                "detail": f"Recipient {payload.receiver} not found",
-                "request_id": request_id,
-            },
-        )
+    # 0. Every send needs a signed-in employee. The internal token is reserved
+    #    for the smoke test, Locust and the in-app Load Lab.
+    session, auth_error = await _require_auth(request)
+    if auth_error is not None:
+        return auth_error
 
-    client_key = _client_key(request, sender)
+    if session["internal"]:
+        # Synthetic load traffic keeps the old behaviour: the worker creates the
+        # fake users. A caller may also address someone by public id.
+        sender, sender_found = await _canonical_identifier(request, payload.sender)
+        if not sender_found:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "detail": f"Sender {payload.sender} not found",
+                    "request_id": request_id,
+                },
+            )
+        receiver, receiver_found = await _canonical_identifier(request, payload.receiver)
+        if not receiver_found:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "detail": f"Recipient {payload.receiver} not found",
+                    "request_id": request_id,
+                },
+            )
+    else:
+        if not _claims_match(session, payload.sender):
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": "You can only send messages as yourself.",
+                    "request_id": request_id,
+                },
+            )
+        # The bearer token is the source of truth: never publish a raw public id
+        # or UUID as the sender username.
+        sender = session["user"]["username"]
+
+        # Real employees must address an account that already exists. This is
+        # what stops a new device from silently inventing a profile.
+        receiver, lookup = await _resolve_recipient(request, payload.receiver)
+        if lookup == "not_found":
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "detail": f"Recipient {payload.receiver} not found",
+                    "request_id": request_id,
+                },
+            )
+        if lookup == "unavailable":
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": "Directory unavailable, please retry",
+                    "request_id": request_id,
+                },
+            )
+
+    client_key = _limit_key(request, session, sender)
 
     # 1. Rate limit first: reject excess traffic before doing any work.
     limit = await request.app.state.limiter.check(client_key)
@@ -468,7 +642,7 @@ async def _proxy_get(
             request.app.state.http,
             f"{settings.message_api_url}{path}",
             params=params,
-            headers={"X-Request-ID": request.state.request_id},
+            headers=_auth_headers(request),
         )
     except httpx.HTTPError as exc:
         log.error("message_api_unavailable", extra={"error": str(exc), "path": path})
@@ -496,7 +670,7 @@ async def _proxy_json(
             method,
             f"{settings.message_api_url}{path}",
             json=payload,
-            headers={"X-Request-ID": request.state.request_id},
+            headers=_auth_headers(request),
         )
     except httpx.HTTPError as exc:
         log.error("message_api_unavailable", extra={"error": str(exc), "path": path})
@@ -532,7 +706,7 @@ async def _canonical_identifier(request: Request, value: str) -> tuple[str, bool
     try:
         response = await request.app.state.http.get(
             f"{settings.message_api_url}/users/{value}",
-            headers={"X-Request-ID": request.state.request_id},
+            headers=_auth_headers(request),
         )
     except httpx.HTTPError:
         # message-api is down; degrade to the old behaviour instead of blocking
@@ -556,9 +730,86 @@ async def _canonical_identifier(request: Request, value: str) -> tuple[str, bool
     return username, True
 
 
-@app.post("/users")
-async def create_user_proxy(request: Request, payload: dict = Body(...)):
-    return await _proxy_json(request, "POST", "/users", payload=payload)
+async def _resolve_recipient(request: Request, value: str) -> tuple[str, str]:
+    """Look up a real account for an authenticated send.
+
+    Returns ``(username, "ok" | "not_found" | "unavailable")``. The result is
+    cached for five minutes so a chatty conversation does not hammer the
+    directory. Unknown recipients are rejected instead of being auto-created.
+    """
+
+    cache_key = f"pinghub:userlookup:{value.lower()}"
+    try:
+        cached = await request.app.state.redis.get(cache_key)
+        if cached == "!missing":
+            return value, "not_found"
+        if cached:
+            return cached, "ok"
+    except Exception:
+        pass
+
+    try:
+        response = await _upstream_get(
+            request.app.state.http,
+            f"{settings.message_api_url}/users/{quote(value, safe='')}",
+            headers=_auth_headers(request),
+        )
+    except httpx.HTTPError as exc:
+        log.error("recipient_lookup_failed", extra={"error": str(exc)})
+        return value, "unavailable"
+
+    if response.status_code == 404:
+        try:
+            await request.app.state.redis.set(cache_key, "!missing", ex=60)
+        except Exception:
+            pass
+        return value, "not_found"
+    if response.status_code != 200:
+        return value, "unavailable"
+
+    try:
+        username = response.json().get("username") or value
+    except Exception:
+        return value, "unavailable"
+
+    try:
+        await request.app.state.redis.set(cache_key, username, ex=300)
+    except Exception:
+        pass
+    return username, "ok"
+
+
+# ---------------------------------------------------------------------------
+# Authentication proxies. message-api owns password checks and sessions.
+# ---------------------------------------------------------------------------
+@app.get("/auth/config")
+async def auth_config_proxy(request: Request):
+    return await _proxy_get(request, "/auth/config")
+
+
+@app.post("/auth/register")
+async def auth_register_proxy(request: Request, payload: dict = Body(...)):
+    return await _proxy_json(request, "POST", "/auth/register", payload=payload)
+
+
+@app.post("/auth/login")
+async def auth_login_proxy(request: Request, payload: dict = Body(...)):
+    return await _proxy_json(request, "POST", "/auth/login", payload=payload)
+
+
+@app.post("/auth/logout")
+async def auth_logout_proxy(request: Request):
+    return await _proxy_json(request, "POST", "/auth/logout")
+
+
+@app.get("/auth/me")
+async def auth_me_proxy(request: Request):
+    return await _proxy_get(request, "/auth/me")
+
+
+@app.post("/auth/password")
+async def auth_password_proxy(request: Request, payload: dict = Body(...)):
+    return await _proxy_json(request, "POST", "/auth/password", payload=payload)
 
 
 @app.get("/users")
@@ -567,6 +818,9 @@ async def list_users_proxy(
     q: str | None = Query(default=None, max_length=64),
     limit: int = Query(default=50, ge=1, le=100),
 ):
+    _, error = await _guard(request)
+    if error is not None:
+        return error
     params: dict = {"limit": limit}
     if q:
         params["q"] = q
@@ -575,7 +829,12 @@ async def list_users_proxy(
 
 @app.get("/users/{identifier}")
 async def get_user_proxy(identifier: str, request: Request):
-    return await _proxy_get(request, f"/users/{identifier}")
+    # Any signed-in employee may look up a colleague (New chat picker and
+    # recipient resolution need this).
+    _, error = await _guard(request)
+    if error is not None:
+        return error
+    return await _proxy_get(request, f"/users/{quote(identifier, safe='')}")
 
 
 @app.get("/users/{identifier}/conversations")
@@ -584,9 +843,12 @@ async def list_conversations_proxy(
     request: Request,
     limit: int = Query(default=50, ge=1, le=100),
 ):
+    _, error = await _guard(request, identifier)
+    if error is not None:
+        return error
     return await _proxy_get(
         request,
-        f"/users/{identifier}/conversations",
+        f"/users/{quote(identifier, safe='')}/conversations",
         params={"limit": limit},
     )
 
@@ -598,19 +860,37 @@ async def get_thread_proxy(
     request: Request,
     limit: int = Query(default=200, ge=1, le=300),
 ):
+    _, error = await _guard(request, identifier)
+    if error is not None:
+        return error
     return await _proxy_get(
         request,
-        f"/users/{identifier}/conversations/{peer}",
+        f"/users/{quote(identifier, safe='')}/conversations/{quote(peer, safe='')}",
         params={"limit": limit},
     )
 
 
 @app.post("/users/{identifier}/conversations/{peer}/read")
 async def mark_read_proxy(identifier: str, peer: str, request: Request):
+    _, error = await _guard(request, identifier)
+    if error is not None:
+        return error
     return await _proxy_json(
         request,
         "POST",
-        f"/users/{identifier}/conversations/{peer}/read",
+        f"/users/{quote(identifier, safe='')}/conversations/{quote(peer, safe='')}/read",
+    )
+
+
+@app.delete("/users/{identifier}/conversations/{peer}")
+async def delete_conversation_proxy(identifier: str, peer: str, request: Request):
+    _, error = await _guard(request, identifier)
+    if error is not None:
+        return error
+    return await _proxy_json(
+        request,
+        "DELETE",
+        f"/users/{quote(identifier, safe='')}/conversations/{quote(peer, safe='')}",
     )
 
 
@@ -618,11 +898,15 @@ async def mark_read_proxy(identifier: str, peer: str, request: Request):
 async def get_message_status(task_id: str, request: Request):
     """Light request: proxy status lookup to message-api (no rate limit)."""
 
+    _, error = await _guard(request)
+    if error is not None:
+        return error
+
     try:
         upstream = await _upstream_get(
             request.app.state.http,
             f"{settings.message_api_url}/messages/{task_id}",
-            headers={"X-Request-ID": request.state.request_id},
+            headers=_auth_headers(request),
         )
     except httpx.HTTPError as exc:
         log.error("message_api_unavailable", extra={"error": str(exc)})
@@ -644,7 +928,11 @@ async def get_history(
 ):
     """Light request: proxy to message-api, which owns the Redis cache."""
 
-    client_key = _client_key(request, user)
+    session, error = await _guard(request, user)
+    if error is not None:
+        return error
+
+    client_key = _limit_key(request, session, user)
     limit_result = await request.app.state.limiter.check(client_key)
     headers = _rate_limit_headers(limit_result)
 
@@ -674,7 +962,7 @@ async def get_history(
             request.app.state.http,
             f"{settings.message_api_url}/history",
             params={"user": user, "limit": limit},
-            headers={"X-Request-ID": request.state.request_id},
+            headers=_auth_headers(request),
         )
     except httpx.HTTPError as exc:
         log.error("message_api_unavailable", extra={"error": str(exc)})

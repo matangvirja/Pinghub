@@ -50,6 +50,10 @@ RABBITMQ_API_URL = os.getenv("RABBITMQ_API_URL", "http://rabbitmq:15672")
 RABBITMQ_USER = os.getenv("RABBITMQ_USER", "pinghub")
 RABBITMQ_PASSWORD = os.getenv("RABBITMQ_PASSWORD", "pinghub")
 
+# Synthetic traffic bypass. The Load Lab impersonates many short-lived users, so
+# it presents the shared internal token instead of a real employee session.
+PINGHUB_INTERNAL_TOKEN = os.getenv("PINGHUB_INTERNAL_TOKEN", "pinghub-internal-dev")
+
 # Optional: the LAN address of the host, written to .env by scripts/start.ps1.
 # It lets the UI show the exact URL to open on a phone or another laptop.
 PINGHUB_LAN_IP = os.getenv("PINGHUB_LAN_IP", "").strip()
@@ -533,6 +537,10 @@ async def _run_loadtest(users: int, duration_seconds: int, stop_event: asyncio.E
         async def virtual_user(index: int) -> None:
             api_key = f"load-{run_id}-{index}"
             sender = f"load_{run_id}_{index}"
+            headers = {
+                "X-API-Key": api_key,
+                "X-Internal-Token": PINGHUB_INTERNAL_TOKEN,
+            }
             counter = 0
             while time.monotonic() < end and not stop_event.is_set():
                 counter += 1
@@ -547,13 +555,13 @@ async def _run_loadtest(users: int, duration_seconds: int, stop_event: asyncio.E
                                 "receiver": receiver,
                                 "body": f"Load #{counter} from virtual user {index}",
                             },
-                            headers={"X-API-Key": api_key},
+                            headers=headers,
                         )
                     else:
                         response = await client.get(
                             f"{GATEWAY_URL}/history",
                             params={"user": sender, "limit": 10},
-                            headers={"X-API-Key": api_key},
+                            headers=headers,
                         )
                     latency = (time.perf_counter() - started) * 1000
                     RUN.record(endpoint, response.status_code, latency)

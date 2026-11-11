@@ -16,13 +16,21 @@ Or through Docker Compose:
 Each virtual user gets its own X-API-Key, so the token bucket (10 tokens,
 1 token/second) is applied per simulated client instead of putting every
 Locust user in one shared bucket.
+
+Synthetic users cannot sign in, so the test also sends the shared internal
+token (``PINGHUB_INTERNAL_TOKEN``). Set it to match your stack:
+
+    PINGHUB_INTERNAL_TOKEN=pinghub-internal-dev locust ...
 """
 
 from __future__ import annotations
 
+import os
 import uuid
 
 from locust import HttpUser, between, events, task
+
+INTERNAL_TOKEN = os.getenv("PINGHUB_INTERNAL_TOKEN", "pinghub-internal-dev")
 
 COUNTERS = {"accepted": 0, "rate_limited": 0, "errors": 0}
 
@@ -34,7 +42,12 @@ class PingHubUser(HttpUser):
         self.api_key = f"locust-{uuid.uuid4()}"
         self.sender = f"load-{uuid.uuid4().hex[:10]}"
         self.receiver = "loadtest-receiver"
-        self.client.headers.update({"X-API-Key": self.api_key})
+        self.client.headers.update(
+            {
+                "X-API-Key": self.api_key,
+                "X-Internal-Token": INTERNAL_TOKEN,
+            }
+        )
 
     @task(5)
     def send_message(self) -> None:

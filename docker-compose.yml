@@ -112,6 +112,12 @@ services:
       DATABASE_URL: postgresql://pinghub:pinghub@postgres:5432/pinghub
       REDIS_URL: redis://redis:6379/0
       HISTORY_CACHE_TTL: "60"
+      # Employee authentication. Change these for a real deployment.
+      PINGHUB_SIGNUP_CODE: ${PINGHUB_SIGNUP_CODE:-pinghub-demo}
+      PINGHUB_INTERNAL_TOKEN: ${PINGHUB_INTERNAL_TOKEN:-pinghub-internal-dev}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-12}
+      REMEMBER_TTL_DAYS: ${REMEMBER_TTL_DAYS:-30}
+      PASSWORD_ITERATIONS: ${PASSWORD_ITERATIONS:-210000}
     ports:
       - "8001:8001"
     depends_on:
@@ -183,6 +189,7 @@ services:
       NOTIFICATION_URL: http://notification-mock:8002
       RATE_LIMIT_CAPACITY: "10"
       RATE_LIMIT_REFILL_PER_SEC: "1"
+      PINGHUB_INTERNAL_TOKEN: ${PINGHUB_INTERNAL_TOKEN:-pinghub-internal-dev}
     ports:
       - "8000:8000"
     depends_on:
@@ -226,6 +233,7 @@ services:
       RABBITMQ_API_URL: http://rabbitmq:15672
       RABBITMQ_USER: pinghub
       RABBITMQ_PASSWORD: pinghub
+      PINGHUB_INTERNAL_TOKEN: ${PINGHUB_INTERNAL_TOKEN:-pinghub-internal-dev}
       # Filled in by scripts/start.ps1 so the UI can show the LAN address.
       PINGHUB_LAN_IP: ${PINGHUB_LAN_IP:-}
       PINGHUB_UI_PORT: ${PINGHUB_UI_PORT:-3000}
@@ -279,6 +287,8 @@ services:
       - ./loadtest/results:/tmp/results
     ports:
       - "8089:8089"
+    environment:
+      PINGHUB_INTERNAL_TOKEN: ${PINGHUB_INTERNAL_TOKEN:-pinghub-internal-dev}
     command:
       [
         "-f",

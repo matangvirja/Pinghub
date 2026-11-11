@@ -1,8 +1,9 @@
 # PingHub Web App — End-User Guide
 
 This guide is for someone who has never used a terminal. You only need a web
-browser. Someone technical starts the stack once by **double-clicking
-`start.cmd`** (or running `docker compose up -d --build`). The launcher prints:
+browser and your employee username and password. Someone technical starts the
+stack once by **double-clicking `start.cmd`** (or running
+`docker compose up -d --build`). The launcher prints:
 
 ```text
 On this computer:     http://localhost:3000
@@ -16,16 +17,33 @@ address on a phone or another laptop connected to the **same Wi-Fi**.
 
 ---
 
-## 1. Create your profile
+## 1. Sign in to your account
 
-1. Type a **username** (for example `alice`). It can contain letters, numbers,
-   dots, dashes, and underscores, 2–32 characters.
-2. Optionally type a **display name** (for example `Alice Sharma`).
-3. Click **Create profile**.
+Every employee has a username and a password. Opening PingHub never creates a
+profile by itself — on a new phone or a new network you will always see the
+sign-in screen first.
 
-You do not need an email, phone number, or password. This is a demo identity.
+### If you already have an account
 
-After creating a profile you land in the app. Your **unique ID** appears at the
+1. Type your **username** (for example `alice`).
+2. Type your **password**.
+3. Optionally tick **Remember me on this device** to stay signed in for 30 days
+   on this device.
+4. Click **Sign in**.
+
+### If this is your first time
+
+1. Open the **Activate / create account** tab.
+2. Type the **company access code** given to you by whoever runs PingHub.
+3. Choose a **username** (2–32 letters, numbers, dots, dashes, or underscores)
+   and an optional **display name** (for example `Alice Sharma`).
+4. Choose a password of at least 8 characters, then click **Create account**.
+
+The company access code is what stops a random device on the Wi-Fi from
+inventing an employee. If you do not know it, ask the person who started the
+stack. (The demo default is `pinghub-demo`.)
+
+After signing in you land in the app. Your **unique ID** appears at the
 bottom-left of the conversation sidebar, for example:
 
 ```text
@@ -38,10 +56,13 @@ The copy button next to it puts the ID on your clipboard.
 
 ### Coming back later
 
-Profiles are remembered in your browser. On the welcome screen, click a saved
-profile under **or continue as**. You can also open the profile menu (your
-avatar at the bottom of the left rail) to switch profiles or sign out of the
-current tab.
+- Untick **Remember me** and your session lives only in that browser tab.
+  Closing the tab signs you out.
+- Tick **Remember me** and this device stays signed in for 30 days.
+- The same account can be signed in on several devices at once.
+- Open the profile menu (your avatar at the bottom of the left rail) to
+  **Change password** or **Sign out**. Changing the password signs out every
+  other device but keeps this one signed in.
 
 ---
 
@@ -86,12 +107,27 @@ Load-test accounts are hidden from the directory so the list stays readable.
 Messages are queued first. That is why the send button responds immediately
 even when the system is busy.
 
+You always send as the employee you signed in as. PingHub will not let you send
+a message as someone else, and the recipient must already have an account.
+
 ### If you are sending too fast
 
-Every profile has a small burst allowance (10 requests) and then refills at one
+Every employee has a small burst allowance (10 requests) and then refills at one
 request per second. If you exceed it, the app shows a friendly notice and the
 message is not sent. Wait a second and try again. This is the system protecting
 itself, not an error.
+
+### Delete a whole chat
+
+1. Open the conversation you no longer want.
+2. Click the **trash** icon at the top of the conversation, next to the person's
+   name.
+3. Confirm **Delete chat**.
+
+The chat disappears from **your** list and your History. This does not delete it
+for the other person — they keep their copy. It is also not permanent forever:
+if the other person sends a **new** message, the chat comes back automatically
+with that new message. Messages from before the delete stay hidden for you.
 
 ---
 
@@ -114,15 +150,16 @@ and allow notifications when the browser asks.
 
 ### Two-person demo in two tabs
 
-1. Create **Alice** in tab 1.
-2. Open a second tab at http://localhost:3000 and create **Bob**.
+1. Sign in (or create) **Alice** in tab 1.
+2. Open a second tab at http://localhost:3000 and sign in as **Bob**. Each tab
+   keeps its own session, so the second tab does not replace Alice.
 3. In Alice's tab, start a chat with Bob's ID and send a message.
 4. Switch to Bob's tab. The conversation shows an unread badge (for example
    `1`).
 5. Open the conversation. Bob's app marks Alice's message as read.
 6. Switch back to Alice's tab. The message now shows **Read**.
 
-Each tab keeps its own active profile, so this works even in the same browser.
+Each tab keeps its own signed-in session, so this works even in the same browser.
 
 ### Two-person demo on two devices (phones/laptops)
 
@@ -131,10 +168,12 @@ Each tab keeps its own active profile, so this works even in the same browser.
    **“On other devices”** address (for example `http://192.168.1.25:3000`).
 3. Open that address in the browser on the other device. Nothing is installed
    on the phone — the browser is the app.
-4. Create a profile on each device.
+4. Sign in on each device. You can use the same employee account on both, or
+   create a separate account with the company access code. A new device never
+   creates a profile by itself.
 5. Click **Use on another device** below your unique ID. Copy the invite; it
    contains the address and your 8-character ID.
-6. The other person clicks **New chat**, pastes the ID, and sends.
+6. The other person signs in, clicks **New chat**, pastes the ID, and sends.
 7. The recipient sees an unread badge; opening the chat turns the sender's tick
    into **Read**.
 
@@ -179,16 +218,12 @@ Click **History** in the left rail.
   - **HIT** means the answer came from Redis. Refresh again and it should be a
     HIT.
 
-### Look up another user's history
+### Whose history is this?
 
-Below the filters there is **Look up another user**:
-
-1. Enter their unique ID (`7F3A9C21`), username (`alice`), or UUID.
-2. Click **View**.
-3. Click **Me** to go back to your own history.
-
-This is useful for demonstrating that history is stored per person, not just in
-the browser.
+History always belongs to the employee who is signed in. Other employees'
+history is private: PingHub refuses a request for someone else's messages. If
+you delete a chat, its messages stop appearing in your History too (until a new
+message makes the chat come back).
 
 ---
 
@@ -268,8 +303,9 @@ system.
 
 ### What the Load Lab does behind the scenes
 
-- Each virtual user has its own `X-API-Key`, so each gets an independent token
-  bucket (the same model as the formal Locust test).
+- The generator uses PingHub's internal tooling token and gives each virtual
+  user its own `X-API-Key`, so each gets an independent token bucket (the same
+  model as the formal Locust test). Employees never see this token.
 - Nine out of ten requests are sends; one is a cached history read.
 - The notification provider is temporarily switched to **Healthy** so the test
   measures the platform instead of the mock's intentional 30% failures. The
@@ -286,7 +322,29 @@ explainable check, not a replacement for Locust.
 ## 9. Common questions
 
 **Do I need a password?**
-No. This is a demo identity. Do not use real personal data.
+Yes. Every employee signs in with a username and password. Creating a new account
+also needs the company access code. This is a company LAN app, so treat your
+password like any other work password.
+
+**I opened PingHub on a new phone and it asks me to sign in. Is that a bug?**
+No, that is exactly what should happen. A new device or a new network never
+creates a profile. Sign in, or use **Activate / create account** with the company
+access code.
+
+**What is the company access code?**
+The shared code that allows an employee to create a new account. Whoever runs
+PingHub chooses it (`PINGHUB_SIGNUP_CODE`; the demo default is `pinghub-demo`).
+Ask them if you do not know it.
+
+**I forgot my password.**
+While signed in, open the profile menu -> **Change password**. If you cannot sign
+in at all, ask the technical operator: they can clear that one account's password
+so you can activate it again with the company code. Your history is preserved.
+
+**Why did I get signed out?**
+A normal session lasts 12 hours; **Remember me** lasts 30 days. Changing your
+password signs out every other device. Sign in again — nothing in your history is
+lost.
 
 **Why does my message say Failed?**
 The notification provider is intentionally unreliable by default (30% failures).
@@ -299,21 +357,27 @@ You sent faster than your bucket refills (1 request/second after the first 10).
 Wait a moment and retry. This is expected and is reported separately in the
 Load Lab as `429`.
 
+**I deleted a chat and it came back. Why?**
+Deleting a chat hides it for you only. If the other person sends a new message,
+the chat reappears with that new message. Messages from before the delete stay
+hidden for you. The other person's copy was never removed.
+
 **Is history lost when I close the browser?**
-No. History is stored in PostgreSQL. Your saved profile list is in the browser,
-but the messages are on the server and can be found by username or unique ID.
+No. History is stored in PostgreSQL. Your session may end when you close the tab
+(unless you ticked **Remember me**), but signing in again shows the same
+messages.
 
 **Why do two tabs show different people?**
-The active profile is stored per tab (`sessionStorage`) so you can demo two
-people at once. The saved profile list is shared (`localStorage`). Different
-devices/browsers have independent saved profiles.
+Each tab keeps its own session in `sessionStorage`, so you can sign in as two
+employees at once. **Remember me** stores that device's token in
+`localStorage`; signing out removes it.
 
 **A phone cannot open the address**
 Use the **“On other devices”** address, not `localhost`, and join the same
 Wi-Fi. On Windows, run `scripts\allow-lan.ps1` once as Administrator to allow
 TCP 3000. Guest Wi-Fi often blocks device-to-device traffic.
 
-**The form says “message-api unavailable”**
+**The sign-in form says “message-api unavailable”**
 The backend is still starting. Wait 15–20 seconds and try again. The launcher
 now waits for the full health check before it reports ready.
 
@@ -326,6 +390,6 @@ It does now: the content area has its own scrollbar. Hard-refresh once if an old
 tab still behaves differently.
 
 **How do I start over?**
-Profile menu -> **Sign out of this tab**, or create a new profile. To wipe the
-database, the technical operator can run `docker compose down -v` and start
-again.
+Profile menu -> **Sign out**. To create another employee, use **Activate / create
+account** with the company code. To wipe the whole database, the technical
+operator can run `docker compose down -v` and start again.

@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#080b12" />
   <title>PingHub — messages that survive the spike</title>
-  <!-- ?v=2 breaks browsers that cached the pre-multi-device assets. Bump when
+  <!-- ?v=3 breaks browsers that cached the passwordless assets. Bump when
        the CSS/JS change; nginx also sends Cache-Control: no-store for these. -->
-  <link rel="stylesheet" href="styles.css?v=2" />
+  <link rel="stylesheet" href="styles.css?v=3" />
 </head>
 <body>
   <svg class="sprite" aria-hidden="true">
@@ -33,6 +33,8 @@
     <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5"/><path d="m11 18-6-6 6-6"/></symbol>
     <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></symbol>
     <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 14h10l1-14"/><path d="M10 11v6M14 11v6"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="8" r="4"/><path d="m11 11 9 9"/><path d="m16 16 2-2"/><path d="m18 18 2-2"/></symbol>
   </svg>
 
   <!-- ===================== ONBOARDING ===================== -->
@@ -48,53 +50,95 @@
 
       <div class="onboarding-grid">
         <div class="onboarding-copy">
-          <h2>Talk to anyone.<br /><span>Watch the system keep up.</span></h2>
+          <h2>Talk to your team.<br /><span>Watch the system keep up.</span></h2>
           <p class="lede">
-            Create a profile, share your short ID, and send messages. Every message
-            travels through a real gateway, queue and worker pipeline.
+            Sign in with your company account, share your short ID, and send
+            messages. Every message travels through a real gateway, queue and
+            worker pipeline.
           </p>
           <ul class="feature-list">
+            <li><span class="feature-ico"><svg><use href="#i-lock"></use></svg></span><div><strong>Employee sign-in</strong><small>A username and password protect every account.</small></div></li>
             <li><span class="feature-ico">#</span><div><strong>Share a unique ID</strong><small>No email or phone number needed.</small></div></li>
             <li><span class="feature-ico">✓✓</span><div><strong>Delivered &amp; read receipts</strong><small>See exactly when your message is read.</small></div></li>
-            <li><span class="feature-ico">⚡</span><div><strong>Survives traffic spikes</strong><small>The queue absorbs bursts; workers catch up.</small></div></li>
             <li><span class="feature-ico">◎</span><div><strong>Live system lab</strong><small>Run a load test and get a PASS / FAIL verdict.</small></div></li>
           </ul>
           <div class="onboarding-note">
-            <svg><use href="#i-lock"></use></svg>
-            Demo identity only — no password, no real personal data.
+            <svg><use href="#i-key"></use></svg>
+            New here? You need the company access code to create your account.
           </div>
         </div>
 
         <div class="onboarding-form-wrap">
           <div class="panel onboarding-form">
-            <h3>Create your profile</h3>
-            <p class="muted small">Choose a name. You will get a short ID to share.</p>
-            <form id="createProfileForm">
+            <div class="tabs auth-tabs" role="tablist">
+              <button class="tab active" type="button" data-auth-tab="login">Sign in</button>
+              <button class="tab" type="button" data-auth-tab="register">Activate / create account</button>
+            </div>
+
+            <form id="loginForm" class="auth-form" autocomplete="on">
+              <h3>Welcome back</h3>
+              <p class="muted small">Use your PingHub username and password.</p>
               <label class="field">
                 <span>Username</span>
-                <input id="usernameInput" name="username" autocomplete="off" maxlength="32"
+                <input id="loginUsername" name="username" autocomplete="username" maxlength="64"
+                       placeholder="e.g. alice" required />
+              </label>
+              <label class="field">
+                <span>Password</span>
+                <input id="loginPassword" name="password" type="password" autocomplete="current-password"
+                       maxlength="128" placeholder="••••••••" required />
+              </label>
+              <label class="check-field">
+                <input id="loginRemember" type="checkbox" />
+                <span>Remember me on this device</span>
+              </label>
+              <button class="btn primary wide" type="submit" id="loginBtn">
+                Sign in <svg><use href="#i-arrow"></use></svg>
+              </button>
+              <div id="loginError" class="form-error hidden"></div>
+            </form>
+
+            <form id="registerForm" class="auth-form hidden" autocomplete="on">
+              <h3>Activate your account</h3>
+              <p class="muted small">
+                First time here, or moving from an old passwordless profile? Use
+                the company code to set your password. Existing chats are kept.
+              </p>
+              <label class="field">
+                <span>Company access code</span>
+                <input id="registerCode" type="password" autocomplete="off" maxlength="128"
+                       placeholder="Ask your administrator" required />
+              </label>
+              <label class="field">
+                <span>Username</span>
+                <input id="registerUsername" name="username" autocomplete="username" maxlength="32"
                        placeholder="e.g. alice" required />
               </label>
               <label class="field">
                 <span>Display name <em>optional</em></span>
-                <input id="displayNameInput" name="display_name" autocomplete="off" maxlength="64"
+                <input id="registerDisplay" name="display_name" autocomplete="off" maxlength="64"
                        placeholder="e.g. Alice Sharma" />
               </label>
-              <button class="btn primary wide" type="submit" id="createProfileBtn">
-                Create profile <svg><use href="#i-arrow"></use></svg>
+              <label class="field">
+                <span>Password</span>
+                <input id="registerPassword" name="new-password" type="password" autocomplete="new-password"
+                       minlength="8" maxlength="128" placeholder="At least 8 characters" required />
+              </label>
+              <label class="check-field">
+                <input id="registerRemember" type="checkbox" />
+                <span>Remember me on this device</span>
+              </label>
+              <button class="btn primary wide" type="submit" id="registerBtn">
+                Create my account <svg><use href="#i-arrow"></use></svg>
               </button>
-              <div id="onboardingError" class="form-error hidden"></div>
+              <div id="registerError" class="form-error hidden"></div>
             </form>
-
-            <div id="savedProfilesWrap" class="saved-profiles hidden">
-              <div class="divider"><span>or continue as</span></div>
-              <div id="savedProfiles"></div>
-            </div>
           </div>
 
           <p class="tip">
             <svg><use href="#i-users"></use></svg>
-            Demo tip: create two profiles, then open each in its own browser tab.
+            Demo tip: sign in as two people in two browser tabs, or on two devices
+            on the same Wi-Fi. Each tab keeps its own session.
           </p>
         </div>
       </div>
@@ -202,8 +246,8 @@
                 <button class="icon-btn" id="threadRefreshBtn" title="Refresh">
                   <svg><use href="#i-refresh"></use></svg>
                 </button>
-                <button class="icon-btn" id="threadHistoryBtn" title="View history">
-                  <svg><use href="#i-history"></use></svg>
+                <button class="icon-btn danger" id="threadDeleteBtn" title="Delete chat" aria-label="Delete chat">
+                  <svg><use href="#i-trash"></use></svg>
                 </button>
               </div>
             </header>
@@ -264,18 +308,6 @@
               <option value="SENT">Sent only</option>
               <option value="RECEIVED">Received only</option>
             </select>
-          </div>
-
-          <div class="lookup-row">
-            <div>
-              <strong>Look up another user</strong>
-              <p class="muted small">Enter their unique ID or username to view their message history.</p>
-            </div>
-            <form id="historyLookupForm" class="lookup-form">
-              <input id="historyLookupInput" class="input mono" placeholder="7F3A9C21" autocomplete="off" />
-              <button class="btn primary" type="submit">View</button>
-              <button class="btn ghost" type="button" id="historyResetBtn">Me</button>
-            </form>
           </div>
 
           <div id="historyTableWrap" class="table-wrap"></div>
@@ -437,16 +469,48 @@
       <div id="profileCard" class="profile-card"></div>
 
       <div class="modal-section">
-        <div class="section-title">Switch profile</div>
-        <div id="profileList" class="profile-list"></div>
+        <div class="section-title">This device</div>
         <div class="profile-actions">
           <button class="btn ghost" id="shareProfileBtn"><svg><use href="#i-users"></use></svg> Use on another device</button>
-          <button class="btn ghost" id="newProfileBtn"><svg><use href="#i-plus"></use></svg> New profile</button>
-          <button class="btn ghost danger" id="signOutBtn"><svg><use href="#i-switch"></use></svg> Sign out of this tab</button>
+          <button class="btn ghost danger" id="signOutBtn"><svg><use href="#i-switch"></use></svg> Sign out</button>
         </div>
       </div>
 
-      <p class="tip inside"><svg><use href="#i-users"></use></svg> Each browser tab or device holds its own active profile. Share your unique ID to start a chat.</p>
+      <div class="modal-section">
+        <div class="section-title">Change password</div>
+        <form id="passwordForm" class="password-form">
+          <label class="field">
+            <span>Current password</span>
+            <input id="currentPassword" type="password" autocomplete="current-password"
+                   maxlength="128" placeholder="Current password" required />
+          </label>
+          <label class="field">
+            <span>New password</span>
+            <input id="newPassword" type="password" autocomplete="new-password"
+                   minlength="8" maxlength="128" placeholder="At least 8 characters" required />
+          </label>
+          <div id="passwordError" class="form-error hidden"></div>
+          <button class="btn primary" type="submit" id="passwordBtn">Update password</button>
+        </form>
+      </div>
+
+      <p class="tip inside"><svg><use href="#i-lock"></use></svg> Your session lives in this tab. If you untick "Remember me", closing the tab signs you out. Changing your password signs out every other device.</p>
+    </div>
+  </div>
+
+  <div id="confirmModal" class="modal-backdrop hidden">
+    <div class="modal small">
+      <div class="modal-head">
+        <div><p class="eyebrow">Delete chat</p><h3 id="confirmTitle">Delete this chat?</h3></div>
+        <button class="icon-btn modal-close" data-close="confirmModal"><svg><use href="#i-x"></use></svg></button>
+      </div>
+      <p id="confirmText" class="muted small">
+        This removes the conversation from your view. The other person keeps their copy.
+      </p>
+      <div class="confirm-actions">
+        <button class="btn ghost" id="confirmCancelBtn" type="button">Cancel</button>
+        <button class="btn danger" id="confirmOkBtn" type="button">Delete chat</button>
+      </div>
     </div>
   </div>
 
@@ -458,8 +522,9 @@
       </div>
 
       <p class="muted small">
-        Anyone on the same Wi-Fi can open this address, create their own profile,
-        and message you using your unique ID. No app install and no account needed.
+        Anyone on the same Wi-Fi can open this address. They sign in with their own
+        company account, or activate one with the access code, and message you using
+        your unique ID. No app install needed.
       </p>
 
       <div class="share-block">
@@ -490,20 +555,21 @@
       <ol class="share-steps">
         <li>The other person joins the <strong>same Wi-Fi network</strong>.</li>
         <li>They open the address above in any browser.</li>
-        <li>They create their own profile on that device.</li>
+        <li>They sign in, or activate an account with the company code.</li>
         <li>They choose <strong>New chat</strong>, paste your ID, and send.</li>
       </ol>
 
       <p class="tip inside">
         <svg><use href="#i-lock"></use></svg>
-        Demo identity only. Anyone with your 8-character ID can start a chat, so
-        share it only with people you want to message you.
+        Anyone with your 8-character ID can start a chat, so share it only with
+        colleagues you want to message you. Deleting a chat is private to your
+        account.
       </p>
     </div>
   </div>
 
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
-  <script src="app.js?v=2"></script>
+  <script src="app.js?v=3"></script>
 </body>
 </html>

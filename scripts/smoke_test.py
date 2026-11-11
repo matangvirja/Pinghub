@@ -18,18 +18,26 @@ It checks:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import urllib.error
 import urllib.request
 import uuid
 
-GATEWAY = "http://localhost:8000"
-NOTIFICATION = "http://localhost:8002"
+GATEWAY = os.getenv("PINGHUB_GATEWAY_URL", "http://localhost:8000")
+NOTIFICATION = os.getenv("PINGHUB_NOTIFICATION_URL", "http://localhost:8002")
+INTERNAL_TOKEN = os.getenv("PINGHUB_INTERNAL_TOKEN", "pinghub-internal-dev")
 
 PASS = "PASS"
 FAIL = "FAIL"
 results: list[tuple[bool, str]] = []
+
+
+def internal_headers(**extra: str) -> dict[str, str]:
+    """The smoke test uses synthetic users, so it presents the internal token."""
+
+    return {"X-Internal-Token": INTERNAL_TOKEN, **extra}
 
 
 def call(method: str, url: str, body: dict | None = None, headers: dict | None = None):
@@ -80,7 +88,7 @@ def main() -> int:
             "receiver": receiver,
             "body": "hello from the smoke test",
         },
-        {"X-API-Key": api_key},
+        internal_headers(**{"X-API-Key": api_key}),
     )
     payload = json.loads(body) if body else {}
     task_id = payload.get("task_id")
@@ -96,7 +104,9 @@ def main() -> int:
     final = None
     for _ in range(40):
         time.sleep(0.5)
-        status, _, body = call("GET", f"{GATEWAY}/messages/{task_id}")
+        status, _, body = call(
+            "GET", f"{GATEWAY}/messages/{task_id}", headers=internal_headers()
+        )
         state = json.loads(body) if body else {}
         final = state.get("status")
         if final in {"DELIVERED", "FAILED"}:
@@ -108,7 +118,11 @@ def main() -> int:
     )
 
     # 4. History cache: first MISS, second HIT
-    status1, headers1, body1 = call("GET", f"{GATEWAY}/history?user={sender}")
+    status1, headers1, body1 = call(
+        "GET",
+        f"{GATEWAY}/history?user={sender}",
+        headers=internal_headers(**{"X-API-Key": api_key}),
+    )
     cache1 = headers1.get("X-Cache") or headers1.get("x-cache")
     history = json.loads(body1) if body1 else {}
     record(
@@ -117,7 +131,11 @@ def main() -> int:
         f"status={status1} cache={cache1} count={history.get('count')}",
     )
 
-    status2, headers2, _ = call("GET", f"{GATEWAY}/history?user={sender}")
+    status2, headers2, _ = call(
+        "GET",
+        f"{GATEWAY}/history?user={sender}",
+        headers=internal_headers(**{"X-API-Key": api_key}),
+    )
     cache2 = headers2.get("X-Cache") or headers2.get("x-cache")
     record(
         status2 == 200 and cache2 == "HIT",
@@ -138,7 +156,7 @@ def main() -> int:
                 "receiver": receiver,
                 "body": f"burst message {index}",
             },
-            {"X-API-Key": burst_key},
+            internal_headers(**{"X-API-Key": burst_key}),
         )
         if status == 202:
             accepted += 1

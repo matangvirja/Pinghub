@@ -100,6 +100,8 @@ p { margin: 0; }
 .icon-btn:hover { background: var(--panel-3); color: var(--text); }
 .icon-btn.accent { background: var(--accent-soft); color: var(--accent); border-color: rgba(45, 212, 191, .18); }
 .icon-btn.accent:hover { background: rgba(45, 212, 191, .2); }
+.icon-btn.danger { color: var(--muted); }
+.icon-btn.danger:hover { color: var(--red); background: rgba(248, 113, 113, .1); }
 .icon-btn svg { width: 18px; height: 18px; }
 
 .text-btn {
@@ -197,6 +199,15 @@ p { margin: 0; }
 .tip svg { width: 14px; height: 14px; flex: 0 0 auto; margin-top: 1px; }
 .tip.inside { margin-top: 18px; padding: 12px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line-soft); }
 
+/* Employee sign-in / activation */
+.auth-tabs { margin-bottom: 18px; }
+.auth-form h3 { font-size: 17px; }
+.auth-form .muted { margin: 5px 0 18px; }
+.check-field { display: flex; align-items: center; gap: 9px; margin: 0 0 16px; color: var(--muted); font-size: 12px; user-select: none; }
+.check-field input { width: 16px; height: 16px; accent-color: var(--accent); flex: 0 0 auto; }
+.password-form { display: grid; gap: 2px; }
+.password-form .btn { justify-self: start; margin-top: 4px; }
+
 /* ==========================================================================
    APP SHELL
    ========================================================================== */
@@ -255,10 +266,22 @@ p { margin: 0; }
 .conversation {
   display: flex; gap: 11px; align-items: center; width: 100%; text-align: left;
   padding: 11px 10px; border-radius: 13px; border: 1px solid transparent; background: transparent;
-  color: var(--text); transition: .12s;
+  color: var(--text); transition: .12s; cursor: pointer; position: relative;
 }
 .conversation:hover { background: rgba(255, 255, 255, .035); }
+.conversation:focus-visible { outline: 2px solid rgba(45, 212, 191, .45); outline-offset: 1px; }
 .conversation.active { background: var(--panel-2); border-color: var(--line); }
+.conversation .conv-delete {
+  display: inline-grid; place-items: center; width: 26px; height: 26px; flex: 0 0 auto;
+  border: 0; border-radius: 8px; background: transparent; color: var(--faint);
+  opacity: 0; transition: .15s;
+}
+.conversation .conv-delete svg { width: 14px; height: 14px; }
+.conversation:hover .conv-delete, .conversation:focus-within .conv-delete { opacity: 1; }
+.conversation .conv-delete:hover { color: var(--red); background: rgba(248, 113, 113, .12); }
+@media (hover: none) {
+  .conversation .conv-delete { opacity: .7; }
+}
 .conversation .conv-body { flex: 1; min-width: 0; }
 .conv-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .conv-top strong { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -484,6 +507,8 @@ p { margin: 0; }
 .modal-backdrop { position: fixed; inset: 0; background: rgba(3, 6, 11, .72); backdrop-filter: blur(6px); display: grid; place-items: center; padding: 20px; z-index: 60; animation: fade .15s ease-out; }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 .modal { width: min(560px, 100%); max-height: min(86vh, 760px); overflow-y: auto; background: linear-gradient(160deg, #131c2b, #0c121d); border: 1px solid var(--line); border-radius: 20px; padding: 22px; box-shadow: var(--shadow); animation: rise .18s ease-out; }
+.modal.small { width: min(430px, 100%); }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 @keyframes rise { from { transform: translateY(8px) scale(.99); opacity: .99; } to { transform: none; } }
 .modal-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; }
 .modal-head h3 { font-size: 19px; }

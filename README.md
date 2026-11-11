@@ -1,11 +1,18 @@
 # PingHub — Gateway-Based Messaging and Notification Platform
 
-PingHub is a **scalable messaging backend with a complete end-user web app**. A
-user creates a profile, shares a short unique ID, and sends messages. The
-message is accepted instantly (`202`), then processed and delivered in the
-background. The sender sees **Delivered** and **Read** ticks, the recipient sees
-unread badges and history, and an in-app **Load Lab** proves whether the system
-stays robust under load.
+PingHub is a **scalable messaging backend with a complete end-user web app**.
+Every employee signs in with a username and password, shares a short unique ID,
+and sends messages. The message is accepted instantly (`202`), then processed
+and delivered in the background. The sender sees **Delivered** and **Read**
+ticks, the recipient sees unread badges and history, either side can delete a
+whole chat, and an in-app **Load Lab** proves whether the system stays robust
+under load.
+
+PingHub is designed for a **company LAN**: employees open the same web app from
+their own phones and laptops on the office Wi-Fi. A new device or a new network
+never creates a profile by itself — it shows the sign-in screen, and only a
+valid employee account can enter. Creating a brand-new account requires the
+company access code.
 
 No terminal commands are needed to use the product. The terminal is only for
 starting the stack and for the optional engineering tools.
@@ -70,28 +77,49 @@ This adds a Windows Firewall inbound rule for TCP 3000 on Private networks. See
 [Section 15](#15-troubleshooting) if it still fails (guest Wi-Fi / AP isolation
 blocks device-to-device traffic).
 
-### Create your profile
+### Sign in or create your employee account
 
-1. Open http://localhost:3000.
-2. Enter a username (for example `alice`) and an optional display name.
-3. Click **Create profile**.
-4. Your **unique ID** appears in the left sidebar, for example `7F3A9C21`.
+1. Open http://localhost:3000. You always land on the **Sign in** screen.
+2. If you already have an account, enter your **username** and **password** and
+   click **Sign in**.
+3. If this is your first time, open the **Activate / create account** tab, type
+   the **company access code**, choose a username and password, and click
+   **Create account**. The default demo code is `pinghub-demo`; the person who
+   runs the stack can change it with `PINGHUB_SIGNUP_CODE` in `.env`.
+4. Tick **Remember me on this device** to stay signed in for 30 days on that
+   device. Leave it unticked to keep the session in this browser tab only.
+5. Your **unique ID** appears in the left sidebar, for example `7F3A9C21`.
    Share it with the other person.
+
+Rules and safety:
+
+- Usernames are 2–32 letters, numbers, dots, dashes, or underscores.
+- Passwords must be at least 8 characters and are stored as salted
+  PBKDF2-SHA256 hashes — never in plain text.
+- **No profile is created automatically.** Opening the app on a new phone or a
+  new network just shows the sign-in form. Account creation needs the company
+  code, so a random device on the Wi-Fi cannot invent an employee.
+- Existing passwordless profiles from the old demo are **activated** the first
+  time their owner uses **Activate / create account**; their history and unique
+  ID are kept.
 
 ### Demo two people with two tabs
 
-Read receipts need two identities. Each browser tab keeps its own active profile
-(profiles are stored in `sessionStorage`; the saved profile list is in
-`localStorage`).
+Read receipts need two identities. Each tab keeps its own session
+(`sessionStorage`), so you can sign in as two different employees in the same
+browser.
 
-1. Create **Alice** in tab 1.
-2. Open a second tab at http://localhost:3000 and create **Bob**.
+1. Sign in (or create) **Alice** in tab 1.
+2. Open a second tab at http://localhost:3000 and sign in as **Bob**. Each tab
+   has its own session, so the second tab does not replace Alice.
 3. In Alice's tab, click **New chat**, choose **By unique ID**, and paste Bob's
    ID. Click **Open chat**.
 4. Send a message.
 5. In Bob's tab, the conversation shows an unread badge. Open it.
 6. Alice's message changes from **Delivered** to **Read** (double tick), and
    Alice gets a read-receipt notification.
+7. In either tab, use the **trash** icon at the top of the conversation to
+   delete that chat from that employee's view only.
 
 > Tip: keep both tabs in the same browser window and switch between them. The
 > app polls the server every few seconds; the tab you are viewing refreshes
@@ -106,27 +134,33 @@ The backend still runs only on this computer. Other devices just need a browser.
 2. Connect the phone/laptop to the **same Wi-Fi network**.
 3. On the other device, open that address in any browser. Nothing is installed
    on the phone.
-4. Create a profile on that device. Each device has its own saved profiles; the
-   unique ID is what connects people.
+4. Sign in with the **same employee account** you use on this computer, or
+   create a separate account using the company access code. A new device never
+   creates a profile automatically — it only offers sign-in and account
+   activation.
 5. On this computer, click **Use on another device** below your ID to see the
    address, your unique ID, and a ready-made invite message. Send that invite.
-6. The other person clicks **New chat**, pastes your 8-character ID, and sends.
+6. The other person signs in, clicks **New chat**, pastes your 8-character ID,
+   and sends.
 7. You see the unread badge; open the chat and the sender sees **Read**.
 
 `localhost` never works from another device — it means “this device”. Use the
 detected LAN address instead. The in-app panel deliberately swaps `localhost`
 for the LAN URL.
 
-> Security note: PingHub is a course demo with no passwords. Anyone on your
-> Wi-Fi who knows an 8-character ID can start a chat with that profile. Do not
+The same account can be signed in on several devices, each with its own session.
+Changing your password signs out every other device but keeps the current one.
+
+> Security note: keep the app on the company Wi-Fi. Change the default
+> `PINGHUB_SIGNUP_CODE` and `PINGHUB_INTERNAL_TOKEN` before sharing, and do not
 > expose port 3000 to the public internet.
 
 ### What each screen does
 
 | Screen | What you can do |
 |---|---|
-| **Chats** | Search conversations, see unread badges, open a chat by unique ID or username, send messages, watch status ticks, resend failed messages, copy your own ID. |
-| **History** | See every sent/received message with its status, filters and search, the Redis cache **HIT/MISS** badge, export JSON, and look up another user's history by ID or username. |
+| **Chats** | Search conversations, see unread badges, open a chat by unique ID or username, send messages, watch status ticks, resend failed messages, copy your own ID, and **delete a whole chat** from your own view. |
+| **History** | See your own sent/received messages with status, filters and search, the Redis cache **HIT/MISS** badge, and JSON export. Other employees' history is private. |
 | **System** | Live health of every node, queue depth, message counters, provider failure simulator, recent worker tasks, and the **Load Lab** with a PASS/WARN/FAIL verdict. |
 
 ### Status meanings
@@ -205,10 +239,12 @@ is visible. It is a product-level receipt, not a separate delivery attempt.
 
 ### Request flow for `POST /messages`
 
-1. The UI sends `sender`, `receiver`, and `body`. `sender`/`receiver` may be a
-   username or an 8-character public ID.
-2. Gateway resolves public IDs (cached in Redis), assigns a `request_id`, and
-   checks the token bucket. Empty bucket -> `429` with `Retry-After`.
+1. The UI sends `Authorization: Bearer <session>`, plus `sender`, `receiver`,
+   and `body`. `sender` must match the signed-in employee; `receiver` may be a
+   username or an 8-character public ID of an existing account.
+2. Gateway validates the session with message-api, resolves public IDs (cached
+   in Redis), assigns a `request_id`, and checks the token bucket. Empty bucket
+   -> `429` with `Retry-After`.
 3. Gateway generates `task_id` + `message_id`, writes the initial `QUEUED`
    state to Redis, publishes a persistent task to RabbitMQ, and immediately
    returns `202 Accepted`.
@@ -248,12 +284,12 @@ The UI shows that header as the **redis cache: HIT/MISS** badge on History.
 | Service | Port | Responsibility |
 |---|---|---|
 | `ui` | **3000** | Static end-user web app served by nginx. Proxies `/api/` to the gateway and `/ops/` to ops-api, so the browser uses one origin. |
-| `gateway` | 8000 | Request ID, public-ID resolution, routing, token-bucket limiter (429), `/health`, queue publish, read-API proxy. Runs 4 uvicorn workers. |
-| `message-api` | 8001 | Profiles, conversations, threads, read receipts, message history (Redis cache-aside), task status. |
+| `gateway` | 8000 | Request ID, employee-session gate + ownership checks, public-ID resolution, routing, token-bucket limiter (429), `/health`, queue publish, auth/read/conversation proxies. Runs 4 uvicorn workers. |
+| `message-api` | 8001 | Accounts, passwords (PBKDF2-SHA256), bearer sessions, profiles, conversations, threads, read receipts, per-user chat delete, message history (Redis cache-aside), task status. |
 | `ops-api` | 8003 | System dashboard aggregation and the in-app Load Lab. Kept separate from the message path. |
 | `worker` (2 replicas) | — | Consume queue, write DB, call notifier, retry + circuit breaker. Up to 5 tasks concurrently per replica. |
 | `notification-mock` | 8002 | Fake email provider; controllable failures and latency. |
-| `postgres` | 5432 | `users`, `messages`, `task_logs`. |
+| `postgres` | 5432 | `users`, `messages`, `task_logs`, `auth_sessions`, `conversation_hides`. |
 | `redis` | 6379 | History cache, task state, rate-limit buckets, worker heartbeats, public-ID lookup cache. |
 | `rabbitmq` | 5672 / 15672 | Durable task queue + management UI. |
 | `migrate` | — | One-shot job that applies every SQL migration on every `compose up`, then exits. |
@@ -277,7 +313,7 @@ PingHub/
 │   ├── health.py                 # aggregated /health
 │   └── config.py
 ├── message-api/
-│   └── main.py                   # profiles, conversations, read, history, status
+│   └── main.py                   # auth, sessions, profiles, read, delete, history
 ├── worker/
 │   ├── worker.py                 # RabbitMQ consumer loop, heartbeat
 │   ├── db.py                     # idempotent PostgreSQL writes
@@ -288,8 +324,8 @@ PingHub/
 ├── ops-api/
 │   └── main.py                   # dashboard metrics + in-app load generator
 ├── ui/
-│   ├── index.html                # onboarding, chats, history, system, modals
-│   ├── app.js                    # state, polling, read receipts, Load Lab
+│   ├── index.html                # sign-in/activation, chats, history, system, modals
+│   ├── app.js                    # sessions, polling, read receipts, delete, Load Lab
 │   ├── styles.css                # responsive dark theme
 │   ├── nginx.conf                # /api -> gateway, /ops -> ops-api
 │   └── Dockerfile
@@ -297,7 +333,8 @@ PingHub/
 │   ├── 001_create_users.sql
 │   ├── 002_create_messages.sql
 │   ├── 003_create_task_logs.sql
-│   └── 004_ui_features.sql       # public IDs, display names, READ, timestamps
+│   ├── 004_ui_features.sql       # public IDs, display names, READ, timestamps
+│   └── 005_auth_and_chat_delete.sql  # passwords, sessions, per-user chat delete
 ├── loadtest/
 │   ├── locustfile.py
 │   └── results/
@@ -316,7 +353,7 @@ PingHub/
 
 ---
 
-## 5. Data model additions for the UI
+## 5. Data model additions for the UI and authentication
 
 Migration `004_ui_features.sql` adds:
 
@@ -333,6 +370,19 @@ read aloud. An 8-character ID is easy to share, and lookups accept either form.
 The migration is re-runnable: the `migrate` Compose service applies every file
 on every start, so existing `pgdata` volumes are upgraded automatically.
 
+Migration `005_auth_and_chat_delete.sql` adds:
+
+| Column / table | Purpose |
+|---|---|
+| `users.password_hash` | `pbkdf2_sha256$<iterations>$<salt>$<digest>`. `NULL` means a legacy profile that still needs activation. |
+| `users.is_active` | Lets an operator disable an account without deleting its history. |
+| `auth_sessions` | One row per signed-in device/tab: `user_id`, SHA-256 `token_hash`, `expires_at`, `created_at`. The raw bearer token is never stored. |
+| `conversation_hides` | `user_id`, `peer_id`, `hidden_at`. A per-user soft delete; the other participant keeps their copy. |
+
+Password hashing uses only the Python standard library (`hashlib.pbkdf2_hmac`,
+`secrets`, `hmac`). No extra dependency is required. Session tokens are 32-byte
+URL-safe random strings; the database stores only their SHA-256 hash.
+
 ---
 
 ## 6. Using the app (non-technical guide)
@@ -346,6 +396,10 @@ on every start, so existing `pgdata` volumes are upgraded automatically.
    line.
 4. Watch the tick: clock -> spinning clock -> single check -> blue double check.
 
+The sender is always the signed-in employee, taken from the session token. The
+UI cannot send a message as somebody else, and the recipient must be an existing
+account.
+
 ### Read receipts
 
 When the recipient opens the chat while the tab is visible, the app marks every
@@ -356,11 +410,28 @@ delivered incoming message as `READ`. The sender sees:
 
 Read receipts are best-effort. If the network drops, the next poll retries.
 
-### Unique IDs and history lookup
+### Delete a whole chat
+
+1. Open the conversation you want to remove.
+2. Click the **trash** icon at the top of the thread (next to the person's name).
+3. Confirm **Delete chat**.
+
+What happens:
+
+- The chat disappears from **your** Chats list and your History. The other
+  person keeps their copy.
+- It is a soft delete, not a database wipe. The row is recorded in
+  `conversation_hides`.
+- If the other person sends a **new** message afterwards, the chat comes back
+  automatically with the new message. Messages from before the delete stay
+  hidden for you.
+- Deleting the chat you are currently reading clears the thread immediately.
+
+### Unique IDs and history
 
 - Your ID is in the sidebar and in the profile modal, with a copy button.
-- **History -> Look up another user** accepts an ID, username, or UUID and shows
-  that person's latest 50 messages.
+- **History** shows only your own sent and received messages; other employees'
+  history is private. Use the filters to narrow it down.
 - History supports text search, status filter, direction filter, and JSON
   export.
 
@@ -372,16 +443,19 @@ background tab. The app polls; it does not need WebSockets.
 
 ### Rate limiting in the UI
 
-The UI sends `X-API-Key` equal to your public ID. Each identity gets a 10-token
-burst and 1 token/second refill. If you send very quickly, you will see a
-friendly “Rate limit reached” hint and a `429` — this is the protection working,
-not a bug.
+The UI sends `Authorization: Bearer <session token>`, and the gateway keys the
+bucket by the signed-in username. Each employee gets a 10-token burst and 1
+token/second refill shared across their devices. If you send very quickly, you
+will see a friendly “Rate limit reached” hint and a `429` — this is the
+protection working, not a bug.
 
-### Two profiles in two tabs
+### Sessions in two tabs
 
-Profiles are saved in `localStorage`, but the **active** profile is in
-`sessionStorage`. Open a second tab to be a second person, or use the profile
-menu to switch. Signing out only affects the current tab.
+The bearer token lives in `sessionStorage`, so each tab keeps its own employee.
+Open a second tab and sign in as a second person to demo read receipts. Ticking
+**Remember me on this device** moves the token to `localStorage` for 30 days, so
+you stay signed in even after closing the tab. **Sign out** removes only the
+current device's session.
 
 ### Same Wi-Fi, different devices
 
@@ -392,12 +466,12 @@ modal). The panel shows:
 - your 8-character unique ID,
 - a ready-made invite message with both, ready to copy into WhatsApp or SMS.
 
-Every browser/device has its own saved profile list — two devices can even use
-the same username, because messages are addressed by unique ID. The backend,
-database, queue, and workers all stay on the host computer.
+An employee can sign in to the same account on several devices. A brand-new
+device shows the sign-in screen and never creates a profile on its own. The
+backend, database, queue, and workers all stay on the host computer.
 
-Profiles are intentionally passwordless. This is a classroom demo, so keep port
-3000 on your private network.
+Keep port 3000 on your private network, and change the default company access
+code before sharing the app outside your team.
 
 ---
 
@@ -427,7 +501,8 @@ visible.
 
 The Load Lab is a bounded, in-process HTTP generator inside `ops-api`:
 
-- each virtual user gets its own `X-API-Key`, so each has its own token bucket;
+- the generator sends the internal tooling token plus a per-virtual-user
+  `X-API-Key`, so each virtual user has its own token bucket;
 - nine requests in ten are sends, one is a cached history read;
 - the provider is temporarily set to `always_succeed` so the measurement is
   about the platform, not the mock’s random failures; the previous mode is
@@ -468,34 +543,73 @@ The measured run is in [`docs/load-test-report.md`](docs/load-test-report.md):
 The UI uses these through nginx. They are also available directly on the
 gateway at `:8000`.
 
-### Profiles
+### Authentication
+
+The UI normally handles this; these calls show what happens underneath. Every
+user-facing data route (messages, conversations, history, directory) needs a
+bearer token. Only `/health`, `/auth/config`, `/auth/register`, and `/auth/login`
+are open.
 
 ```powershell
-# Create or sign in
-Invoke-RestMethod -Method Post -Uri http://localhost:8000/users `
+# 1. Create an employee account (needs the company access code)
+$registered = Invoke-RestMethod -Method Post -Uri http://localhost:8000/auth/register `
   -ContentType "application/json" `
-  -Body '{"username":"alice","display_name":"Alice"}'
+  -Body '{"username":"alice","password":"correct-horse-9","signup_code":"pinghub-demo","display_name":"Alice"}'
 
+# 2. Or sign in to an existing account
+$session = Invoke-RestMethod -Method Post -Uri http://localhost:8000/auth/login `
+  -ContentType "application/json" `
+  -Body '{"username":"alice","password":"correct-horse-9","remember":false}'
+
+$token = $session.token
+$headers = @{ Authorization = "Bearer $token" }
+
+# 3. Who am I?
+Invoke-RestMethod -Uri http://localhost:8000/auth/me -Headers $headers
+
+# 4. Change password (keeps this device signed in, revokes all others)
+Invoke-RestMethod -Method Post -Uri http://localhost:8000/auth/password `
+  -Headers $headers -ContentType "application/json" `
+  -Body '{"current_password":"correct-horse-9","new_password":"another-good-1"}'
+
+# 5. Sign out this device
+Invoke-RestMethod -Method Post -Uri http://localhost:8000/auth/logout -Headers $headers
+```
+
+`POST /auth/register` also activates a legacy passwordless profile with the same
+username, keeping its unique ID and history. `POST /users` is **not** public: it
+exists only for the internal tooling token.
+
+### Profiles and directory
+
+```powershell
 # Directory (load-test users are hidden)
-Invoke-RestMethod -Uri "http://localhost:8000/users?limit=20"
+Invoke-RestMethod -Uri "http://localhost:8000/users?limit=20" -Headers $headers
 
 # Look up by username, public ID, or UUID
-Invoke-RestMethod -Uri "http://localhost:8000/users/7F3A9C21"
+Invoke-RestMethod -Uri "http://localhost:8000/users/7F3A9C21" -Headers $headers
 ```
 
 ### Conversations and read receipts
 
 ```powershell
-# Chat list with unread counts
-Invoke-RestMethod -Uri "http://localhost:8000/users/alice/conversations"
+# Chat list with unread counts (only your own username/ID is allowed)
+Invoke-RestMethod -Uri "http://localhost:8000/users/alice/conversations" -Headers $headers
 
-# Full thread (accepts username or public ID for both sides)
-Invoke-RestMethod -Uri "http://localhost:8000/users/alice/conversations/bob"
+# Full thread (accepts username or public ID for both sides, including your own)
+Invoke-RestMethod -Uri "http://localhost:8000/users/alice/conversations/bob" -Headers $headers
 
 # Mark all delivered messages from bob to alice as READ
 Invoke-RestMethod -Method Post `
-  -Uri "http://localhost:8000/users/alice/conversations/bob/read"
+  -Uri "http://localhost:8000/users/alice/conversations/bob/read" -Headers $headers
+
+# Delete the whole chat from alice's view (bob keeps his copy)
+Invoke-RestMethod -Method Delete `
+  -Uri "http://localhost:8000/users/alice/conversations/bob" -Headers $headers
 ```
+
+A request for another employee's conversations returns `403`. The delete is
+per-user and soft: a newer message from `bob` makes the chat reappear.
 
 ### Send a message
 
@@ -509,11 +623,15 @@ $body = @{
 $response = Invoke-RestMethod -Method Post `
   -Uri http://localhost:8000/messages `
   -ContentType "application/json" `
-  -Headers @{ "X-API-Key" = "demo-alice" } `
+  -Headers $headers `
   -Body $body
 
 $taskId = $response.task_id
 ```
+
+`sender` must match the signed-in employee (username, public ID, or UUID);
+otherwise the gateway returns `403`. `receiver` must be an existing account, so
+a typo cannot silently create a new user.
 
 Response:
 
@@ -530,14 +648,17 @@ Response:
 ### Check status, history, and cache
 
 ```powershell
-Invoke-RestMethod -Uri "http://localhost:8000/messages/$taskId"
+Invoke-RestMethod -Uri "http://localhost:8000/messages/$taskId" -Headers $headers
 
-$first = Invoke-WebRequest -Uri "http://localhost:8000/history?user=alice"
+$first = Invoke-WebRequest -Uri "http://localhost:8000/history?user=alice" -Headers $headers
 $first.Headers["X-Cache"]     # MISS
 
-$second = Invoke-WebRequest -Uri "http://localhost:8000/history?user=alice"
+$second = Invoke-WebRequest -Uri "http://localhost:8000/history?user=alice" -Headers $headers
 $second.Headers["X-Cache"]    # HIT
 ```
+
+`/history?user=` accepts only your own username/ID. Asking for a colleague's
+history returns `403`.
 
 Possible statuses: `QUEUED`, `PROCESSING`, `DELIVERED`, `READ`, `FAILED`.
 
@@ -635,14 +756,16 @@ worker   db_updated
 
 ## 10. Testing and load tools
 
-### Smoke test (backward-compatible)
+### Smoke test (uses the internal tooling token)
 
 ```bash
 python scripts/smoke_test.py
 ```
 
-It checks `/health`, a `202` send, terminal delivery, history MISS then HIT,
-and the token bucket returning `429`.
+It signs in with `PINGHUB_INTERNAL_TOKEN` (not an employee password), then
+checks `/health`, a `202` send, terminal delivery, history MISS then HIT, and
+the token bucket returning `429`. Locust and the in-app Load Lab use the same
+bypass, so synthetic usernames never need real accounts.
 
 ### Formal Locust load test
 
@@ -698,8 +821,27 @@ All settings are environment variables with sane defaults. See `.env.example`.
 | `NOTIFICATION_URL` | `http://notification-mock:8002` | ops-api |
 | `RABBITMQ_API_URL` | `http://rabbitmq:15672` | ops-api |
 | `RABBITMQ_USER` / `RABBITMQ_PASSWORD` | `pinghub` / `pinghub` | ops-api |
+| `PINGHUB_SIGNUP_CODE` | `pinghub-demo` | message-api (account activation) |
+| `PINGHUB_INTERNAL_TOKEN` | `pinghub-internal-dev` | gateway, message-api, ops-api, smoke test, Locust |
+| `SESSION_TTL_HOURS` | `12` | message-api (normal session) |
+| `REMEMBER_TTL_DAYS` | `30` | message-api (“Remember me” session) |
+| `PASSWORD_ITERATIONS` | `210000` | message-api (PBKDF2 work factor) |
 | `PINGHUB_LAN_IP` | auto-detected | ops-api (shown by **Use on another device**) |
 | `PINGHUB_UI_PORT` | `3000` | ui (host port) + ops-api (share URL) |
+
+**Change these two before sharing the app:**
+
+```powershell
+# .env (or your shell) — pick your own values
+PINGHUB_SIGNUP_CODE=acme-internal-2026
+PINGHUB_INTERNAL_TOKEN=long-random-internal-secret
+```
+
+`PINGHUB_SIGNUP_CODE` is what employees type to create their account.
+`PINGHUB_INTERNAL_TOKEN` is the shared bypass used by the smoke test, Locust and
+the in-app Load Lab for synthetic users; employees never see it. If you change
+the internal token, the test scripts and `ops-api` read it from the same
+environment automatically.
 
 `scripts/start.ps1` writes `PINGHUB_LAN_IP` and `PINGHUB_UI_PORT` to `.env`
 automatically. The UI has no other runtime configuration: nginx routes `/api/`
@@ -728,7 +870,8 @@ a longer queue instead of slow responses or crashes.
 It allows a short burst (10 requests) and then smooths traffic to 1 request per
 second per client. Redis makes the bucket shared across gateway replicas, so
 adding replicas cannot bypass the limit. If Redis dies, an in-process fallback
-still protects each replica. In the UI, each profile is its own bucket.
+still protects each replica. In the UI, each signed-in employee is its own
+bucket, shared across that employee's devices.
 
 **Why Redis for history?**
 History is read far more often than it changes. Cache-aside gives an immediate
@@ -758,6 +901,23 @@ A UUID is hard to share verbally. An 8-character uppercase hex ID is short,
 copyable, and indexed. Lookups accept the public ID, username, or UUID, and the
 gateway caches public-ID resolution in Redis so the normal username path adds no
 extra call.
+
+**Why username + password instead of “just open the app”?**
+The app runs on a company LAN, so every employee must have an identity that
+follows them across devices. A passwordless profile that appears automatically
+on any new phone is convenient for a demo but wrong for an office: anyone on the
+Wi-Fi could become anyone. Passwords are hashed with PBKDF2-SHA256 and a unique
+salt; sessions are opaque random tokens stored only as SHA-256 hashes, so a
+database leak does not expose usable passwords or live tokens. Account creation
+is gated by a company access code, which keeps a random device from inventing an
+employee while still letting the team onboard itself.
+
+**Why a per-user soft delete for chats?**
+Messaging history is shared by two people. If deleting a chat removed the rows,
+it would also erase the other person's copy. `conversation_hides` records “this
+employee hid this conversation at time T”, so the list and history are filtered
+per user. A newer message has a timestamp after T, so the chat reappears
+naturally without a background job. The other participant is unaffected.
 
 **Why polling instead of WebSockets?**
 The read paths are cheap and cached. A 2–2.6 second poll is simpler, survives
@@ -791,9 +951,11 @@ not block the other four. This is what lets two replicas drain ~113 messages/s.
 | Async queue + worker pool | `worker/`, RabbitMQ, `--scale worker=3` |
 | Retries + circuit breaker | `worker/resilience.py` |
 | End-user web UI | `ui/` at http://localhost:3000 |
-| Unique IDs + directory | `users.public_id`, `POST/GET /users` |
+| Unique IDs + directory | `users.public_id`, `GET /users` |
+| Employee authentication | `005_auth_and_chat_delete.sql`, `/auth/*`, PBKDF2 passwords, bearer sessions |
 | Delivered / read receipts | `004_ui_features.sql`, conversations/read endpoints, UI ticks |
-| History + cache visibility | History screen, `X-Cache` HIT/MISS badge |
+| Delete a whole chat | `conversation_hides`, `DELETE /users/{id}/conversations/{peer}`, trash button |
+| History + cache visibility | History screen (own history only), `X-Cache` HIT/MISS badge |
 | In-app robustness test | Ops API `/loadtest`, System -> Load Lab |
 | Load test | `loadtest/locustfile.py` |
 | Structured logs with `request_id` | `common/logger.py`, all services |
@@ -808,9 +970,10 @@ not block the other four. This is what lets two replicas drain ~113 messages/s.
 |---|---|
 | 0–1 | `docs/architecture.png`; explain UI -> gateway -> queue -> worker -> DB |
 | 1–2 | Run `start.cmd`; open `http://localhost:3000`; optionally show a phone on the printed LAN URL |
-| 2–4 | Alice sends by Bob's unique ID (other tab or phone); Bob sees the unread badge; open it; Alice sees **Read** |
-| 4–5 | History: filters, cache **MISS** then **HIT**, lookup by another user's ID |
-| 5–7 | System -> Load Lab: 50 users / 10 s; show PASS, latency, queue chart, drain time |
+| 2–4 | Sign in as Alice and Bob (two tabs or a phone); Alice sends by Bob's unique ID; Bob sees the unread badge; open it; Alice sees **Read** |
+| 4–5 | Delete the chat as Alice (trash icon + confirm); show that Bob still has it; send a new message and show it reappear for Alice |
+| 5–6 | History: own messages, filters, cache **MISS** then **HIT**; show that another user's history is refused |
+| 6–7 | System -> Load Lab: 50 users / 10 s; show PASS, latency, queue chart, drain time |
 | 7–8 | Provider -> Always fail; send a message; show retries and **Failed** with Resend; restore Healthy |
 | 8–9 | Worker logs: retries, circuit breaker, request_id trace |
 | 9–10 | Summarize the formal Locust numbers from `docs/load-test-report.md` |
@@ -823,7 +986,7 @@ not block the other four. This is what lets two replicas drain ~113 messages/s.
 `:8000` is the gateway API (and `/docs` is its Swagger page). The web app is at
 **`http://localhost:3000`**.
 
-**The onboarding form says “message-api unavailable”**
+**The sign-in form says “message-api unavailable”**
 The UI is up but the backend is still starting. Wait 15–20 seconds and submit
 again. Check with:
 
@@ -834,6 +997,43 @@ Invoke-RestMethod http://localhost:3000/api/health
 
 All nodes should be `up`. `scripts\start.ps1` and `start.cmd` now wait for this
 health check before declaring success.
+
+**I opened the app on a new phone and it asks me to sign in**
+That is correct. The app never creates a profile automatically. Sign in, or use
+**Activate / create account** with the company access code. See
+[Sign in or create your employee account](#sign-in-or-create-your-employee-account).
+
+**The company access code is rejected**
+It must match `PINGHUB_SIGNUP_CODE` exactly. The default is `pinghub-demo`.
+Change it in `.env` and restart the stack:
+
+```powershell
+# edit .env, then
+docker compose up -d
+```
+
+**An old passwordless username cannot sign in**
+Legacy profiles have no password yet. Open **Activate / create account**, enter
+the same username, the company code, and a new password. The unique ID and all
+history are kept.
+
+**I forgot my password**
+There is no public reset email in this LAN demo. While signed in, open the
+profile menu -> **Change password**. Otherwise an administrator can clear the
+hash for one account and let its owner reactivate it with the company code
+(history is preserved):
+
+```powershell
+docker compose exec postgres psql -U pinghub -d pinghub -c `
+  "UPDATE users SET password_hash = NULL WHERE lower(username) = 'alice';"
+docker compose exec postgres psql -U pinghub -d pinghub -c `
+  "DELETE FROM auth_sessions WHERE user_id = (SELECT id FROM users WHERE lower(username) = 'alice');"
+```
+
+**I was signed out unexpectedly**
+Normal sessions last `SESSION_TTL_HOURS` (12 by default). “Remember me” sessions
+last `REMEMBER_TTL_DAYS` (30). Changing your password signs out every other
+device. Sign in again; your history is unchanged.
 
 **A phone or another laptop cannot open the LAN URL**
 1. Confirm both devices are on the **same Wi-Fi** (not one on Wi-Fi and one on
@@ -874,10 +1074,11 @@ PostgreSQL may still be applying migrations. `docker compose ps` should show
 `healthy` for `postgres`, `redis`, and `rabbitmq`. `migrate` should have exited
 with code 0.
 
-**New columns or `READ` are missing on an old database**
-Migration `004_ui_features.sql` is applied by the `migrate` service on every
-start. Check `docker compose logs migrate`; it should end with the `ALTER TABLE`
-and `CREATE INDEX` lines. You do not need to delete the volume.
+**New columns, `READ`, or sign-in are missing on an old database**
+Migrations `004_ui_features.sql` and `005_auth_and_chat_delete.sql` are applied
+by the `migrate` service on every start. Check `docker compose logs migrate`; it
+should end with the `ALTER TABLE` and `CREATE INDEX` lines. You do not need to
+delete the volume.
 
 **Port already in use**
 For the UI, set `PINGHUB_UI_PORT` (see [Section 11](#11-configuration)) instead

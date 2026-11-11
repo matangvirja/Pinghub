@@ -5,12 +5,11 @@
 
 const API = "/api";
 const OPS = "/ops";
-const PROFILES_KEY = "pinghub.profiles.v1";
-const ACTIVE_KEY = "pinghub.active.v1";
+const TOKEN_KEY = "pinghub.session.token.v1";
 
 const state = {
   me: null,
-  profiles: [],
+  authTab: "login",
   view: "chat",
   conversations: [],
   activePeer: null,
@@ -28,7 +27,10 @@ const state = {
   pollTimer: null,
   systemTimer: null,
   share: null,
+  confirm: null,
 };
+
+let sessionExpiredHandled = false;
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
@@ -123,8 +125,10 @@ function statusPill(status) {
 }
 
 async function api(path, options = {}, base = API) {
-  const { method = "GET", body, headers = {} } = options;
+  const { method = "GET", body, headers = {}, skipAuthRedirect = false } = options;
   const init = { method, headers: { ...headers } };
+  const token = getToken();
+  if (token) init.headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) {
     init.headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);
@@ -150,6 +154,9 @@ async function api(path, options = {}, base = API) {
     const error = new Error(message);
     error.status = response.status;
     error.data = data;
+    if (response.status === 401 && state.me && !skipAuthRedirect) {
+      handleSessionExpired(message);
+    }
     throw error;
   }
   return { data, headers: response.headers, status: response.status };
@@ -165,66 +172,84 @@ function friendlyError(error) {
 }
 
 /* --------------------------------------------------------------------------
-   Local profile storage. sessionStorage makes each tab a separate user,
-   which is exactly what a two-person read-receipt demo needs.
+   Session storage. The bearer token lives in sessionStorage so each browser
+   tab can be a different employee (the two-person read-receipt demo). Ticking
+   "Remember me" moves it to localStorage for this device.
    -------------------------------------------------------------------------- */
-function loadProfiles() {
-  try { return JSON.parse(localStorage.getItem(PROFILES_KEY) || "[]"); }
-  catch { return []; }
+function getToken() {
+  return sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY);
 }
 
-function saveProfile(user) {
-  const profiles = loadProfiles().filter((p) => p.username.toLowerCase() !== user.username.toLowerCase());
-  profiles.unshift(user);
-  localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles.slice(0, 12)));
-  state.profiles = profiles;
+function setToken(token, remember) {
+  if (remember) {
+    localStorage.setItem(TOKEN_KEY, token);
+    sessionStorage.removeItem(TOKEN_KEY);
+  } else {
+    sessionStorage.setItem(TOKEN_KEY, token);
+    localStorage.removeItem(TOKEN_KEY);
+  }
 }
 
-function getActive() {
-  try { return JSON.parse(sessionStorage.getItem(ACTIVE_KEY) || "null"); }
-  catch { return null; }
-}
-
-function setActive(user) {
-  sessionStorage.setItem(ACTIVE_KEY, JSON.stringify(user));
-}
-
-function clearActive() {
-  sessionStorage.removeItem(ACTIVE_KEY);
+function clearToken() {
+  sessionStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(TOKEN_KEY);
 }
 
 /* --------------------------------------------------------------------------
    Boot
    -------------------------------------------------------------------------- */
-document.addEventListener("DOMContentLoaded", () => {
-  state.profiles = loadProfiles();
+document.addEventListener("DOMContentLoaded", async () => {
   bindEvents();
-  const active = getActive();
-  if (active?.username) enterApp(active);
-  else showOnboarding();
+  if (!getToken()) {
+    showOnboarding();
+    return;
+  }
+  try {
+    const response = await api("/auth/me", { skipAuthRedirect: true });
+    await enterApp(response.data.user);
+  } catch {
+    clearToken();
+    showOnboarding();
+  }
 });
 
-function showOnboarding() {
+function showOnboarding(message) {
+  state.me = null;
+  sessionExpiredHandled = false;
   $("#app").classList.add("hidden");
   $("#onboarding").classList.remove("hidden");
-  renderSavedProfiles();
-  setTimeout(() => $("#usernameInput")?.focus(), 60);
+  // A sign-in failure or an expired session always belongs on the Sign in tab.
+  const tab = message || state.authTab !== "register" ? "login" : "register";
+  switchAuthTab(tab);
+  if (message) {
+    const box = $("#loginError");
+    box.textContent = message;
+    box.classList.remove("hidden");
+  }
+  const target = tab === "register" ? $("#registerUsername") : $("#loginUsername");
+  setTimeout(() => target?.focus(), 60);
+}
+
+function handleSessionExpired(message) {
+  if (sessionExpiredHandled) return;
+  sessionExpiredHandled = true;
+  clearToken();
+  state.me = null;
+  state.pollTimer && clearInterval(state.pollTimer);
+  state.pollTimer = null;
+  state.systemTimer && clearInterval(state.systemTimer);
+  state.systemTimer = null;
+  showOnboarding(message || "Your session expired. Sign in again.");
 }
 
 async function enterApp(user) {
   state.me = user;
-  if (!user.public_id) {
-    try {
-      const response = await api(`/users/${encodeURIComponent(user.username)}`);
-      user = response.data;
-      state.me = user;
-      saveProfile(user);
-      setActive(user);
-    } catch { /* keep the stored profile */ }
-  }
-
+  state.authTab = "login";
+  sessionExpiredHandled = false;
   $("#onboarding").classList.add("hidden");
   $("#app").classList.remove("hidden");
+  $("#loginForm")?.reset();
+  $("#registerForm")?.reset();
   renderMe();
   switchView("chat");
   await loadConversations({ silent: true }).catch(() => {});
@@ -257,57 +282,84 @@ async function pollTick() {
 }
 
 /* --------------------------------------------------------------------------
-   Onboarding
+   Onboarding: sign in / activate
    -------------------------------------------------------------------------- */
-function renderSavedProfiles() {
-  const wrap = $("#savedProfilesWrap");
-  const list = $("#savedProfiles");
-  const profiles = loadProfiles();
-
-  if (!profiles.length) {
-    wrap.classList.add("hidden");
-    return;
-  }
-  wrap.classList.remove("hidden");
-  list.innerHTML = profiles.map((user) => `
-    <button class="saved-profile" data-username="${esc(user.username)}">
-      ${avatarMarkup(user, "tiny")}
-      <span class="meta">
-        <strong>${esc(displayName(user))}</strong>
-        <small>${esc(user.public_id || "")}</small>
-      </span>
-      ${icon("arrow")}
-    </button>
-  `).join("");
-
-  $$(".saved-profile", list).forEach((button) => {
-    button.addEventListener("click", () => {
-      const user = loadProfiles().find((p) => p.username === button.dataset.username);
-      if (user) { setActive(user); enterApp(user); }
-    });
+function switchAuthTab(name) {
+  state.authTab = name;
+  $$("[data-auth-tab]").forEach((tab) => {
+    const active = tab.dataset.authTab === name;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
   });
+  $("#loginForm").classList.toggle("hidden", name !== "login");
+  $("#registerForm").classList.toggle("hidden", name !== "register");
+  $("#loginError").classList.add("hidden");
+  $("#registerError").classList.add("hidden");
+  setTimeout(() => {
+    const target = name === "register" ? $("#registerUsername") : $("#loginUsername");
+    target?.focus();
+  }, 40);
 }
 
-async function handleCreateProfile(event) {
+async function handleLogin(event) {
   event.preventDefault();
-  const username = $("#usernameInput").value.trim();
-  const displayNameValue = $("#displayNameInput").value.trim();
-  const errorBox = $("#onboardingError");
-  const button = $("#createProfileBtn");
+  const username = $("#loginUsername").value.trim();
+  const password = $("#loginPassword").value;
+  const remember = $("#loginRemember").checked;
+  const errorBox = $("#loginError");
+  const button = $("#loginBtn");
 
   errorBox.classList.add("hidden");
   button.disabled = true;
-
   try {
-    const response = await api("/users", {
+    const response = await api("/auth/login", {
       method: "POST",
-      body: { username, display_name: displayNameValue || null },
+      body: { username, password, remember },
+      skipAuthRedirect: true,
     });
-    const user = response.data.user || response.data;
-    saveProfile(user);
-    setActive(user);
-    $("#createProfileForm").reset();
-    await enterApp(user);
+    setToken(response.data.token, remember);
+    $("#loginForm").reset();
+    await enterApp(response.data.user);
+    toast("Signed in", `Welcome back, ${displayName(response.data.user)}.`, "success");
+  } catch (error) {
+    errorBox.textContent = friendlyError(error);
+    errorBox.classList.remove("hidden");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function handleRegister(event) {
+  event.preventDefault();
+  const username = $("#registerUsername").value.trim();
+  const displayNameValue = $("#registerDisplay").value.trim();
+  const password = $("#registerPassword").value;
+  const signupCode = $("#registerCode").value;
+  const remember = $("#registerRemember").checked;
+  const errorBox = $("#registerError");
+  const button = $("#registerBtn");
+
+  errorBox.classList.add("hidden");
+  button.disabled = true;
+  try {
+    const response = await api("/auth/register", {
+      method: "POST",
+      body: {
+        username,
+        password,
+        signup_code: signupCode,
+        display_name: displayNameValue || null,
+        remember,
+      },
+      skipAuthRedirect: true,
+    });
+    setToken(response.data.token, remember);
+    $("#registerForm").reset();
+    await enterApp(response.data.user);
+    const message = response.data.activated
+      ? "Your existing profile is now protected by your new password. Your chats are still here."
+      : "Your employee account is ready.";
+    toast("Account ready", message, "success");
   } catch (error) {
     errorBox.textContent = friendlyError(error);
     errorBox.classList.remove("hidden");
@@ -384,7 +436,8 @@ function renderConversations() {
     const active = state.activePeer?.username === peer.username ? "active" : "";
 
     return `
-      <button class="conversation ${active}" data-username="${esc(peer.username)}">
+      <div class="conversation ${active}" data-username="${esc(peer.username)}" role="button" tabindex="0"
+           aria-label="Open chat with ${esc(displayName(peer))}">
         ${avatarMarkup(peer)}
         <span class="conv-body">
           <span class="conv-top">
@@ -394,12 +447,80 @@ function renderConversations() {
           <span class="conv-preview">${preview}</span>
         </span>
         ${conversation.unread_count > 0 ? `<span class="unread-badge">${conversation.unread_count}</span>` : ""}
-      </button>`;
+        <button class="conv-delete" type="button" data-delete-chat="${esc(peer.username)}"
+                title="Delete chat" aria-label="Delete chat with ${esc(displayName(peer))}">${icon("trash")}</button>
+      </div>`;
   }).join("");
 
-  $$(".conversation", list).forEach((button) => {
-    button.addEventListener("click", () => openChat(button.dataset.username));
+  $$(".conversation", list).forEach((row) => {
+    row.addEventListener("click", (event) => {
+      if (event.target.closest("[data-delete-chat]")) return;
+      openChat(row.dataset.username);
+    });
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openChat(row.dataset.username);
+      }
+    });
   });
+
+  $$("[data-delete-chat]", list).forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const peer = state.conversations.find(
+        (c) => c.peer.username === button.dataset.deleteChat
+      )?.peer;
+      if (peer) askDeleteChat(peer);
+    });
+  });
+}
+
+/* --------------------------------------------------------------------------
+   Delete a whole chat (per-user soft delete)
+   -------------------------------------------------------------------------- */
+function askDeleteChat(peer) {
+  if (!peer) return;
+  state.confirm = { action: "delete-chat", peer };
+  $("#confirmTitle").textContent = `Delete chat with ${displayName(peer)}?`;
+  $("#confirmText").textContent =
+    "The conversation disappears from your Chats list. The other person keeps "
+    + "their copy. If they message you again, the chat comes back.";
+  $("#confirmOkBtn").textContent = "Delete chat";
+  openModal("confirmModal");
+  setTimeout(() => $("#confirmOkBtn").focus(), 50);
+}
+
+async function deleteChat(peer) {
+  if (!state.me || !peer) return;
+  const path = `/users/${encodeURIComponent(state.me.username)}/conversations/${encodeURIComponent(peer.username)}`;
+  try {
+    await api(path, { method: "DELETE" });
+
+    state.conversations = state.conversations.filter(
+      (conversation) => conversation.peer.username !== peer.username
+    );
+    delete state.lastUnread[peer.username];
+
+    if (state.activePeer?.username === peer.username) {
+      state.activePeer = null;
+      state.messages = [];
+      state.lastStatuses = {};
+      renderMessages();
+      $("#threadPanel").classList.add("hidden");
+      $("#chatEmpty").classList.remove("hidden");
+      $("#view-chat").classList.remove("mobile-thread");
+    }
+
+    renderConversations();
+    toast(
+      "Chat deleted",
+      `${displayName(peer)} is no longer in your Chats list. They still have their copy.`,
+      "success"
+    );
+  } catch (error) {
+    toast("Could not delete chat", error.message, "error");
+  }
 }
 
 /* --------------------------------------------------------------------------
@@ -624,7 +745,6 @@ async function sendMessage(text) {
     const response = await api("/messages", {
       method: "POST",
       body: { sender: state.me.username, receiver: peer.username, body },
-      headers: { "X-API-Key": state.me.public_id || state.me.username },
     });
 
     const remaining = response.headers.get("X-RateLimit-Remaining");
@@ -675,14 +795,14 @@ function updateComposer() {
 /* --------------------------------------------------------------------------
    History
    -------------------------------------------------------------------------- */
-async function loadHistory(forUser) {
+async function loadHistory() {
   if (!state.me) return;
-  const target = forUser || state.me.username;
+  const target = state.me.username;
 
   try {
     const response = await api(`/history?user=${encodeURIComponent(target)}&limit=50`);
     state.history = {
-      target: response.data.user || target,
+      target: state.me.username,
       messages: response.data.messages || [],
       cache: response.headers.get("X-Cache") || "—",
     };
@@ -1127,16 +1247,17 @@ async function openNewChat() {
   const hint = $("#demoHintText");
   if (hint) {
     hint.textContent = isLocalOrigin()
-      ? "On another device, open the Wi-Fi address shown under \"Use on another device\" below your ID. Create a profile there, then share unique IDs."
-      : `On another device, open ${location.origin} on the same Wi-Fi, create a profile there, then share unique IDs.`;
+      ? "On another device, open the Wi-Fi address shown under \"Use on another device\" below your ID. Sign in there (or activate an account with the company code), then share unique IDs."
+      : `On another device, open ${location.origin} on the same Wi-Fi, sign in or activate an account there, then share unique IDs.`;
   }
 
   await loadDirectory("");
 }
 
 function switchTab(name) {
-  $$(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === name));
-  $$(".tab-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `tab-${name}`));
+  const modal = $("#newChatModal");
+  $$(".tab", modal).forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === name));
+  $$(".tab-panel", modal).forEach((panel) => panel.classList.toggle("active", panel.id === `tab-${name}`));
   if (name === "directory") setTimeout(() => $("#directorySearch").focus(), 50);
   if (name === "id") setTimeout(() => $("#lookupChatInput").focus(), 50);
 }
@@ -1151,7 +1272,7 @@ async function loadDirectory(query) {
     const users = (response.data.users || []).filter((user) => user.username !== state.me.username);
 
     if (!users.length) {
-      list.innerHTML = `<div class="empty-list"><strong>No profiles found</strong>Create another profile in a second browser tab, then come back.</div>`;
+      list.innerHTML = `<div class="empty-list"><strong>No colleagues found</strong>Ask a teammate to sign in or activate an account, then come back.</div>`;
       return;
     }
 
@@ -1202,26 +1323,52 @@ function renderProfileModal() {
     closeModal("profileModal");
     openShareModal();
   });
+  $("#passwordForm").reset();
+  $("#passwordError").classList.add("hidden");
+}
 
-  const profiles = loadProfiles();
-  $("#profileList").innerHTML = profiles.map((user) => `
-    <div class="profile-row ${user.username === state.me.username ? "active" : ""}">
-      ${avatarMarkup(user, "tiny")}
-      <div class="pr-meta">
-        <strong>${esc(displayName(user))}</strong>
-        <small>${esc(user.public_id || "")}</small>
-      </div>
-      ${user.username === state.me.username
-        ? `<span class="badge live">active</span>`
-        : `<button class="btn ghost small" data-switch="${esc(user.username)}">Switch</button>`}
-    </div>`).join("");
+async function handlePasswordChange(event) {
+  event.preventDefault();
+  const currentPassword = $("#currentPassword").value;
+  const newPassword = $("#newPassword").value;
+  const errorBox = $("#passwordError");
+  const button = $("#passwordBtn");
 
-  $$("[data-switch]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const user = profiles.find((profile) => profile.username === button.dataset.switch);
-      if (user) { setActive(user); location.reload(); }
+  errorBox.classList.add("hidden");
+  button.disabled = true;
+  try {
+    await api("/auth/password", {
+      method: "POST",
+      body: { current_password: currentPassword, new_password: newPassword },
     });
-  });
+    $("#passwordForm").reset();
+    toast(
+      "Password updated",
+      "Every other device was signed out. This tab stays signed in.",
+      "success"
+    );
+  } catch (error) {
+    errorBox.textContent = friendlyError(error);
+    errorBox.classList.remove("hidden");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function signOut() {
+  try {
+    await api("/auth/logout", { method: "POST", skipAuthRedirect: true });
+  } catch { /* best effort: local sign-out still works */ }
+
+  clearToken();
+  state.me = null;
+  closeModal("profileModal");
+  if (state.pollTimer) clearInterval(state.pollTimer);
+  state.pollTimer = null;
+  if (state.systemTimer) clearInterval(state.systemTimer);
+  state.systemTimer = null;
+  showOnboarding();
+  toast("Signed out", "This tab is signed out. Other devices stay signed in.", "info");
 }
 
 /* --------------------------------------------------------------------------
@@ -1265,7 +1412,7 @@ async function openShareModal() {
 
   const info = await deviceInfo();
   const invite = `Join me on PingHub.\nAddress: ${info.url}\nMy unique ID: ${state.me.public_id}\n`
-    + "Open the address on the same Wi-Fi, create a profile, then choose New chat and paste my ID.";
+    + "Open the address on the same Wi-Fi, sign in (or activate an account with the company code), then choose New chat and paste my ID.";
   state.share = { ...info, invite };
 
   $("#shareUrl").textContent = info.url;
@@ -1362,8 +1509,12 @@ function switchView(view) {
 }
 
 function bindEvents() {
-  // Onboarding
-  $("#createProfileForm").addEventListener("submit", handleCreateProfile);
+  // Onboarding: sign in / activate
+  $("#loginForm").addEventListener("submit", handleLogin);
+  $("#registerForm").addEventListener("submit", handleRegister);
+  $$("[data-auth-tab]").forEach((tab) => {
+    tab.addEventListener("click", () => switchAuthTab(tab.dataset.authTab));
+  });
 
   // Navigation
   $$(".rail-btn").forEach((button) => {
@@ -1396,31 +1547,16 @@ function bindEvents() {
     }
   });
   $("#threadRefreshBtn").addEventListener("click", () => loadThread({ forceScroll: true }));
-  $("#threadHistoryBtn").addEventListener("click", () => {
-    switchView("history");
-    if (state.activePeer) {
-      loadHistory(state.activePeer.username);
-      $("#historyLookupInput").value = state.activePeer.public_id || state.activePeer.username;
-    }
-  });
+  $("#threadDeleteBtn").addEventListener("click", () => askDeleteChat(state.activePeer));
   $("#mobileBackBtn").addEventListener("click", () => {
     $("#view-chat").classList.remove("mobile-thread");
   });
 
-  // History
-  $("#refreshHistoryBtn").addEventListener("click", () => loadHistory($("#historyLookupInput").value.trim() || undefined));
+  // History (always the signed-in employee)
+  $("#refreshHistoryBtn").addEventListener("click", () => loadHistory());
   $("#historySearch").addEventListener("input", renderHistory);
   $("#historyStatusFilter").addEventListener("change", renderHistory);
   $("#historyDirectionFilter").addEventListener("change", renderHistory);
-  $("#historyLookupForm").addEventListener("submit", (event) => {
-    event.preventDefault();
-    const target = $("#historyLookupInput").value.trim();
-    if (target) loadHistory(target);
-  });
-  $("#historyResetBtn").addEventListener("click", () => {
-    $("#historyLookupInput").value = "";
-    loadHistory();
-  });
   $("#exportHistoryBtn").addEventListener("click", () => {
     if (!state.history) return;
     const blob = new Blob([JSON.stringify(state.history.messages, null, 2)], { type: "application/json" });
@@ -1451,7 +1587,7 @@ function bindEvents() {
   });
 
   // New chat modal
-  $$(".tab").forEach((tab) => tab.addEventListener("click", () => switchTab(tab.dataset.tab)));
+  $$("#newChatModal .tab").forEach((tab) => tab.addEventListener("click", () => switchTab(tab.dataset.tab)));
   $("#lookupChatForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const identifier = $("#lookupChatInput").value.trim();
@@ -1470,7 +1606,7 @@ function bindEvents() {
       switchView("chat");
       await openChat(user.username);
     } catch (error) {
-      errorBox.textContent = error.status === 404 ? "No profile matches that ID or username." : error.message;
+      errorBox.textContent = error.status === 404 ? "No colleague matches that ID or username." : error.message;
       errorBox.classList.remove("hidden");
     }
   });
@@ -1480,14 +1616,17 @@ function bindEvents() {
   });
 
   // Profile modal
-  $("#newProfileBtn").addEventListener("click", () => {
-    closeModal("profileModal");
-    clearActive();
-    showOnboarding();
+  $("#passwordForm").addEventListener("submit", handlePasswordChange);
+  $("#signOutBtn").addEventListener("click", signOut);
+  $("#confirmCancelBtn").addEventListener("click", () => {
+    state.confirm = null;
+    closeModal("confirmModal");
   });
-  $("#signOutBtn").addEventListener("click", () => {
-    clearActive();
-    location.reload();
+  $("#confirmOkBtn").addEventListener("click", async () => {
+    const pending = state.confirm;
+    state.confirm = null;
+    closeModal("confirmModal");
+    if (pending?.action === "delete-chat") await deleteChat(pending.peer);
   });
 
   // Generic modal close / backdrop

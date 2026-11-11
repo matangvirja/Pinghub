@@ -47,5 +47,9 @@ class Settings:
     # How long the gateway waits for message-api before returning 503.
     proxy_timeout: float = _float("PROXY_TIMEOUT_SECONDS", 5.0)
 
+    # Shared secret for synthetic traffic (smoke test, Locust, Load Lab). Real
+    # employees must present a bearer session instead.
+    internal_token: str = os.getenv("PINGHUB_INTERNAL_TOKEN", "pinghub-internal-dev")
+
 
 settings = Settings()

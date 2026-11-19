@@ -768,12 +768,14 @@ function renderMessages({ forceScroll = false } = {}) {
   const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 140;
   let html = "";
   let currentDay = null;
+  let previous = null;
   const byId = new Map();
 
   for (const message of state.messages) {
     byId.set(message.id, message);
     const day = fmtDay(message.created_at);
-    if (day !== currentDay) {
+    const dayChanged = day !== currentDay;
+    if (dayChanged) {
       html += `<div class="day-sep">${esc(day)}</div>`;
       currentDay = day;
     }
@@ -781,9 +783,14 @@ function renderMessages({ forceScroll = false } = {}) {
     const failed = message.status === "FAILED";
     const errorText = message.error ? esc(message.error) : "The notification provider rejected this message after retries.";
     const attachment = message.attachment;
-    const bodyHtml = attachment
-      ? `<span class="body-text">${esc(message.body)}</span>`
-      : esc(message.body);
+    const isMine = !!message.is_mine;
+    // Consecutive messages from the same sender form one visual group: only
+    // the first shows an avatar and the rows sit a little closer together.
+    const grouped = !dayChanged && previous && previous.is_mine === isMine;
+
+    // pre-wrap belongs on this span, never on the bubble itself. Otherwise the
+    // template-literal indentation renders as large empty space in the bubble.
+    const bodyHtml = `<span class="bubble-text">${esc(message.body || "")}</span>`;
     const attachmentHtml = attachment ? `
           <button type="button" class="attachment-card" data-download="${esc(attachment.id)}" data-filename="${esc(attachment.filename)}">
             <span class="file-icon">${icon("file")}</span>
@@ -793,16 +800,22 @@ function renderMessages({ forceScroll = false } = {}) {
             </span>
             <span class="file-download">${icon("download")}</span>
           </button>` : "";
+    const avatarHtml = isMine
+      ? ""
+      : grouped
+        ? `<span class="msg-avatar-spacer" aria-hidden="true"></span>`
+        : avatarMarkup(state.activePeer || {}, "msg-avatar");
 
     html += `
-      <div class="msg ${message.is_mine ? "mine" : "theirs"}" data-id="${esc(message.id)}">
-        <div>
+      <div class="msg ${isMine ? "mine" : "theirs"}${grouped ? " grouped" : ""}" data-id="${esc(message.id)}">
+        ${avatarHtml}
+        <div class="msg-stack">
           <div class="bubble ${attachment ? "has-attachment" : ""}">
             ${bodyHtml}
             ${attachmentHtml}
             <div class="msg-meta">
               <span>${esc(fmtTime(message.created_at))}</span>
-              ${message.is_mine ? tickMarkup(message) : ""}
+              ${isMine ? tickMarkup(message) : ""}
             </div>
           </div>
           ${failed ? `
@@ -812,6 +825,7 @@ function renderMessages({ forceScroll = false } = {}) {
             </div>` : ""}
         </div>
       </div>`;
+    previous = message;
   }
 
   list.innerHTML = html;

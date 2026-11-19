@@ -14,6 +14,8 @@ Owns the light read paths and the conversation data used by the web UI:
   * GET  /users/{id}/conversations/{peer} -> full thread with delivery state
   * POST /users/{id}/conversations/{peer}/read -> mark incoming as READ
   * DELETE /users/{id}/conversations/{peer} -> hide the chat for this user
+  * POST /attachments                      -> store a chat file in PostgreSQL
+  * GET  /attachments/{id}/content         -> download (participants only)
 
 Every user-facing route requires an employee session (``Authorization:
 Bearer <token>``). ``X-Internal-Token`` is accepted for smoke tests, Locust and
@@ -36,14 +38,16 @@ import json
 import os
 import re
 import secrets
+import unicodedata
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote as urlquote
 
 import redis.asyncio as redis
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, Field
@@ -69,6 +73,11 @@ SESSION_TTL_HOURS = int(os.getenv("SESSION_TTL_HOURS", "12"))
 REMEMBER_TTL_DAYS = int(os.getenv("REMEMBER_TTL_DAYS", "30"))
 PASSWORD_ITERATIONS = int(os.getenv("PASSWORD_ITERATIONS", "210000"))
 MIN_PASSWORD_LENGTH = 8
+
+# Chat attachments are stored in PostgreSQL. 10 MB is enough for office files
+# while keeping the queue and HTTP bodies small.
+MAX_UPLOAD_BYTES = int(os.getenv("PINGHUB_MAX_UPLOAD_MB", "10")) * 1024 * 1024
+MAX_FILENAME_LENGTH = 200
 
 # Public ids are 8 uppercase hex characters, e.g. 7F3A9C21.
 PUBLIC_ID_RE = re.compile(r"^[A-Fa-f0-9]{8}$")
@@ -147,6 +156,61 @@ def _serialize_user(row: dict) -> dict:
         "display_name": row["display_name"] or row["username"],
         "created_at": _iso(row["created_at"]),
     }
+
+
+# Attachment metadata is selected with the same aliases in every query, so one
+# serializer works for threads, history and the conversation list.
+ATTACHMENT_COLUMNS = """
+       a.id AS attachment_id,
+       a.filename AS attachment_filename,
+       a.content_type AS attachment_content_type,
+       a.size_bytes AS attachment_size_bytes
+"""
+
+LATEST_ATTACHMENT_COLUMNS = """
+       l.attachment_id,
+       l.attachment_filename,
+       l.attachment_content_type,
+       l.attachment_size_bytes,
+"""
+
+
+def _attachment_meta(row: dict | None) -> dict | None:
+    if not row or not row.get("attachment_id"):
+        return None
+    return {
+        "id": str(row["attachment_id"]),
+        "filename": row["attachment_filename"],
+        "content_type": row["attachment_content_type"],
+        "size_bytes": int(row["attachment_size_bytes"]),
+    }
+
+
+def _safe_filename(value: str | None) -> str:
+    """Keep a readable name without control characters or path separators."""
+
+    name = unicodedata.normalize("NFC", value or "").strip()
+    name = name.replace("\\", "_").replace("/", "_").replace("\x00", "")
+    name = "".join(ch for ch in name if ch.isprintable())
+    return (name or "attachment")[:MAX_FILENAME_LENGTH]
+
+
+def _content_disposition(filename: str) -> str:
+    """Force a download so an uploaded HTML/SVG file can never run in the UI."""
+
+    ascii_name = "".join(ch if 32 <= ord(ch) < 127 and ch not in '"\\' else "_" for ch in filename)
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{urlquote(filename)}"
+
+
+async def _employee_user_id(cursor, session: dict) -> str:
+    """Resolve the current employee, rejecting synthetic internal sessions."""
+
+    if session.get("internal") or not session.get("user"):
+        raise HTTPException(status_code=403, detail="Attachments require an employee session.")
+    me = await _resolve_user(cursor, session["user"]["username"])
+    if me is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return str(me["id"])
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +335,7 @@ def _serialize_row(row: dict) -> dict:
         "updated_at": _iso(row["updated_at"]),
         "delivered_at": _iso(row.get("delivered_at")),
         "read_at": _iso(row.get("read_at")),
+        "attachment": _attachment_meta(row),
     }
 
 
@@ -290,6 +355,7 @@ def _serialize_thread_row(row: dict, me_username: str) -> dict:
         "read_at": _iso(row["read_at"]),
         "attempts": row["attempts"] or 0,
         "error": row["error"],
+        "attachment": _attachment_meta(row),
         "is_mine": row["sender"] == me_username,
     }
 
@@ -316,7 +382,7 @@ SELECT id, username, public_id, display_name, created_at,
 FROM users
 """
 
-HISTORY_SQL = """
+HISTORY_SQL = f"""
 SELECT m.id,
        s.username AS sender,
        r.username AS receiver,
@@ -325,10 +391,11 @@ SELECT m.id,
        m.created_at,
        m.updated_at,
        m.delivered_at,
-       m.read_at
+       m.read_at,{ATTACHMENT_COLUMNS}
 FROM messages m
 JOIN users s ON s.id = m.sender_id
 JOIN users r ON r.id = m.receiver_id
+LEFT JOIN attachments a ON a.id = m.attachment_id
 WHERE (m.sender_id = %(me)s OR m.receiver_id = %(me)s)
   AND m.created_at > COALESCE(
       (
@@ -346,7 +413,7 @@ ORDER BY m.created_at DESC
 LIMIT 50
 """
 
-TASK_SQL = """
+TASK_SQL = f"""
 SELECT t.task_id,
        t.message_id,
        t.status,
@@ -356,11 +423,12 @@ SELECT t.task_id,
        t.updated_at,
        s.username AS sender,
        r.username AS receiver,
-       m.body
+       m.body,{ATTACHMENT_COLUMNS}
 FROM task_logs t
 LEFT JOIN messages m ON m.id = t.message_id
 LEFT JOIN users s ON s.id = m.sender_id
 LEFT JOIN users r ON r.id = m.receiver_id
+LEFT JOIN attachments a ON a.id = m.attachment_id
 WHERE t.task_id = %s
 """
 
@@ -376,16 +444,17 @@ WHERE lower(username) = lower(%(identifier)s)
 LIMIT 1
 """
 
-CONVERSATIONS_SQL = """
+CONVERSATIONS_SQL = f"""
 WITH visible AS (
     SELECT m.id,
            m.sender_id,
            m.receiver_id,
-           m.body,
+           m.body,{ATTACHMENT_COLUMNS},
            m.status,
            m.created_at,
            CASE WHEN m.sender_id = %(me)s THEN m.receiver_id ELSE m.sender_id END AS peer_id
     FROM messages m
+    LEFT JOIN attachments a ON a.id = m.attachment_id
     LEFT JOIN conversation_hides h
            ON h.user_id = %(me)s
           AND h.peer_id = CASE
@@ -407,7 +476,7 @@ SELECT u.id,
        l.id AS last_id,
        l.body AS last_body,
        l.status AS last_status,
-       l.created_at AS last_at,
+       l.created_at AS last_at,{LATEST_ATTACHMENT_COLUMNS}
        (l.sender_id = %(me)s) AS last_from_me,
        (
            SELECT COUNT(*)::int
@@ -422,7 +491,7 @@ ORDER BY l.created_at DESC
 LIMIT %(limit)s
 """
 
-THREAD_SQL = """
+THREAD_SQL = f"""
 SELECT m.id,
        t.task_id,
        s.username AS sender,
@@ -436,11 +505,12 @@ SELECT m.id,
        m.delivered_at,
        m.read_at,
        t.attempts,
-       t.error
+       t.error,{ATTACHMENT_COLUMNS}
 FROM messages m
 JOIN users s ON s.id = m.sender_id
 JOIN users r ON r.id = m.receiver_id
 LEFT JOIN task_logs t ON t.message_id = m.id
+LEFT JOIN attachments a ON a.id = m.attachment_id
 WHERE ((m.sender_id = %(me)s AND m.receiver_id = %(peer)s)
     OR (m.sender_id = %(peer)s AND m.receiver_id = %(me)s))
   AND m.created_at > COALESCE(
@@ -524,6 +594,7 @@ async def auth_config() -> dict:
         "min_password_length": MIN_PASSWORD_LENGTH,
         "session_hours": SESSION_TTL_HOURS,
         "remember_days": REMEMBER_TTL_DAYS,
+        "max_upload_bytes": MAX_UPLOAD_BYTES,
     }
 
 
@@ -808,7 +879,9 @@ async def list_users(
     Load-test users are hidden so a demo does not get flooded with fake names.
     """
 
-    sql = USER_SQL + "WHERE is_active = TRUE AND username NOT LIKE 'load\\_%'"
+    # psycopg treats '%' as a placeholder when params are supplied, so the
+    # literal wildcard in the LIKE pattern must be doubled to '%%'.
+    sql = USER_SQL + "WHERE is_active = TRUE AND username NOT LIKE 'load\\_%%'"
     params: list = []
 
     if q:
@@ -873,6 +946,7 @@ async def list_conversations(
                 "status": row["last_status"],
                 "created_at": _iso(row["last_at"]),
                 "from_me": row["last_from_me"],
+                "attachment": _attachment_meta(row),
             },
             "unread_count": row["unread_count"],
         }
@@ -1155,6 +1229,7 @@ async def message_status(task_id: str, session: dict = Depends(require_session))
             "sender": row["sender"],
             "receiver": row["receiver"],
             "body": row["body"],
+            "attachment": _attachment_meta(row),
             "created_at": _iso(row["created_at"]),
             "updated_at": _iso(row["updated_at"]),
             "source": "database",
@@ -1182,3 +1257,213 @@ async def message_status(task_id: str, session: dict = Depends(require_session))
         return state
 
     raise HTTPException(status_code=404, detail="Task not found")
+
+
+# ---------------------------------------------------------------------------
+# Chat file attachments
+# ---------------------------------------------------------------------------
+ATTACHMENT_SQL = """
+SELECT a.id,
+       a.uploader_id,
+       a.filename,
+       a.content_type,
+       a.size_bytes,
+       a.created_at,
+       u.username AS uploader,
+       m.id AS message_id,
+       m.status AS message_status
+FROM attachments a
+JOIN users u ON u.id = a.uploader_id
+LEFT JOIN messages m ON m.attachment_id = a.id
+WHERE a.id = %s
+ORDER BY m.created_at DESC NULLS LAST
+LIMIT 1
+"""
+
+
+def _serialize_attachment(row: dict) -> dict:
+    return {
+        "id": str(row["id"]),
+        "filename": row["filename"],
+        "content_type": row["content_type"],
+        "size_bytes": int(row["size_bytes"]),
+        "uploader": row["uploader"],
+        "message_id": str(row["message_id"]) if row["message_id"] else None,
+        "message_status": row["message_status"],
+        "created_at": _iso(row["created_at"]),
+    }
+
+
+async def _get_attachment_row(cursor, attachment_id: str) -> dict | None:
+    try:
+        uuid.UUID(attachment_id)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    await cursor.execute(ATTACHMENT_SQL, (attachment_id,))
+    return await cursor.fetchone()
+
+
+@app.post("/attachments", status_code=201)
+async def upload_attachment(
+    file: UploadFile = File(...),
+    session: dict = Depends(require_session),
+):
+    """Store one chat file. The bearer session decides who owns it."""
+
+    content = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Files must be at most {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.",
+        )
+    if not content:
+        raise HTTPException(status_code=422, detail="The file is empty.")
+
+    filename = _safe_filename(file.filename)
+    content_type = (file.content_type or "application/octet-stream")[:120]
+    attachment_id = str(uuid.uuid4())
+
+    async with app.state.pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cursor:
+            uploader_id = await _employee_user_id(cursor, session)
+            # Keep abandoned drafts from growing without bound.
+            await cursor.execute(
+                """
+                DELETE FROM attachments a
+                WHERE a.uploader_id = %s
+                  AND a.created_at < now() - interval '24 hours'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM messages m WHERE m.attachment_id = a.id
+                  )
+                """,
+                (uploader_id,),
+            )
+            await cursor.execute(
+                """
+                INSERT INTO attachments
+                    (id, uploader_id, filename, content_type, size_bytes, content)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (attachment_id, uploader_id, filename, content_type, len(content), content),
+            )
+            row = await _get_attachment_row(cursor, attachment_id)
+
+    log.info(
+        "attachment_uploaded",
+        extra={"attachment_id": attachment_id, "size_bytes": len(content)},
+    )
+    return _serialize_attachment(row)
+
+
+@app.get("/attachments/{attachment_id}")
+async def attachment_metadata(
+    attachment_id: str,
+    session: dict = Depends(require_session),
+):
+    """Metadata used by the gateway before it queues a message."""
+
+    async with app.state.pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cursor:
+            requester_id = await _employee_user_id(cursor, session)
+            row = await _get_attachment_row(cursor, attachment_id)
+            if row is None:
+                raise HTTPException(status_code=404, detail="Attachment not found")
+            if row["message_id"] is not None:
+                # A participant may reuse a failed file message (Resend).
+                await cursor.execute(
+                    "SELECT sender_id, receiver_id FROM messages WHERE id = %s",
+                    (row["message_id"],),
+                )
+                message = await cursor.fetchone()
+                if message is None or requester_id not in (
+                    str(message["sender_id"]), str(message["receiver_id"])
+                ):
+                    raise HTTPException(status_code=403, detail="Not your attachment")
+            elif str(row["uploader_id"]) != requester_id:
+                raise HTTPException(status_code=403, detail="Not your attachment")
+    return _serialize_attachment(row)
+
+
+@app.get("/attachments/{attachment_id}/content")
+async def download_attachment(
+    attachment_id: str,
+    session: dict = Depends(require_session),
+):
+    """Serve the bytes only to the two people in that conversation."""
+
+    async with app.state.pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cursor:
+            requester_id = await _employee_user_id(cursor, session)
+            await cursor.execute(
+                """
+                SELECT a.content,
+                       a.filename,
+                       a.content_type,
+                       a.size_bytes,
+                       a.uploader_id,
+                       m.sender_id,
+                       m.receiver_id,
+                       m.created_at AS message_created_at,
+                       h.hidden_at
+                FROM attachments a
+                LEFT JOIN messages m ON m.attachment_id = a.id
+                LEFT JOIN conversation_hides h
+                       ON h.user_id = %s::uuid
+                      AND h.peer_id = CASE
+                          WHEN m.sender_id = %s::uuid THEN m.receiver_id
+                          ELSE m.sender_id
+                      END
+                WHERE a.id = %s::uuid
+                ORDER BY m.created_at DESC NULLS LAST
+                LIMIT 1
+                """,
+                (requester_id, requester_id, attachment_id),
+            )
+            row = await cursor.fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    if row["sender_id"] is not None:
+        if requester_id not in (str(row["sender_id"]), str(row["receiver_id"])):
+            raise HTTPException(status_code=403, detail="Not part of this conversation")
+        if row["hidden_at"] and row["message_created_at"] <= row["hidden_at"]:
+            raise HTTPException(status_code=404, detail="Attachment not found")
+    elif str(row["uploader_id"]) != requester_id:
+        raise HTTPException(status_code=403, detail="Not your attachment")
+
+    return Response(
+        content=row["content"],
+        media_type=row["content_type"] or "application/octet-stream",
+        headers={
+            "Content-Disposition": _content_disposition(row["filename"]),
+            "Content-Length": str(row["size_bytes"]),
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.delete("/attachments/{attachment_id}")
+async def delete_attachment(
+    attachment_id: str,
+    session: dict = Depends(require_session),
+):
+    """Remove an unsent draft. Sent files stay with their messages."""
+
+    async with app.state.pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cursor:
+            requester_id = await _employee_user_id(cursor, session)
+            row = await _get_attachment_row(cursor, attachment_id)
+            if row is None:
+                raise HTTPException(status_code=404, detail="Attachment not found")
+            if str(row["uploader_id"]) != requester_id:
+                raise HTTPException(status_code=403, detail="Not your attachment")
+            if row["message_id"] is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="A sent file cannot be removed from this draft.",
+                )
+            await cursor.execute("DELETE FROM attachments WHERE id = %s", (attachment_id,))
+
+    return {"deleted": True}

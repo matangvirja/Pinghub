@@ -47,6 +47,11 @@ class Settings:
     # How long the gateway waits for message-api before returning 503.
     proxy_timeout: float = _float("PROXY_TIMEOUT_SECONDS", 5.0)
 
+    # Chat file attachments. Uploads go through the gateway to message-api, so
+    # allow a longer timeout than the small read paths.
+    max_upload_bytes: int = _int("PINGHUB_MAX_UPLOAD_MB", 10) * 1024 * 1024
+    upload_timeout: float = _float("UPLOAD_TIMEOUT_SECONDS", 60.0)
+
     # Shared secret for synthetic traffic (smoke test, Locust, Load Lab). Real
     # employees must present a bearer session instead.
     internal_token: str = os.getenv("PINGHUB_INTERNAL_TOKEN", "pinghub-internal-dev")

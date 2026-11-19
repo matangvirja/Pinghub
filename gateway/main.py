@@ -24,10 +24,10 @@ from urllib.parse import quote
 import aio_pika
 import httpx
 import redis.asyncio as redis
-from fastapi import Body, FastAPI, Query, Request
+from fastapi import Body, FastAPI, File, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from common.logger import configure_logging, get_logger, request_id_var
 from config import settings
@@ -57,15 +57,29 @@ PUBLIC_ID_RE = re.compile(r"^[A-Fa-f0-9]{8}$")
 class MessageIn(BaseModel):
     sender: str = Field(..., min_length=1, max_length=64)
     receiver: str = Field(..., min_length=1, max_length=64)
-    body: str = Field(..., min_length=1, max_length=4000)
+    # A file message may have an empty body; the filename becomes the notifier
+    # text. Text-only messages (smoke test, Locust, Load Lab) are unchanged.
+    body: str = Field(default="", max_length=4000)
+    attachment_id: str | None = Field(default=None, max_length=64)
 
-    @field_validator("sender", "receiver", "body")
+    @field_validator("sender", "receiver")
     @classmethod
     def not_blank(cls, value: str) -> str:
         value = value.strip()
         if not value:
             raise ValueError("must not be blank")
         return value
+
+    @field_validator("body")
+    @classmethod
+    def strip_body(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def body_or_attachment_required(self):
+        if not self.body and not self.attachment_id:
+            raise ValueError("body or attachment_id is required")
+        return self
 
 
 class Publisher:
@@ -438,6 +452,16 @@ async def create_message(payload: MessageIn, request: Request):
     if auth_error is not None:
         return auth_error
 
+    # Synthetic traffic never uploads files; attachments require a real session.
+    if payload.attachment_id and session.get("internal"):
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": "Attachments require an employee session.",
+                "request_id": request_id,
+            },
+        )
+
     if session["internal"]:
         # Synthetic load traffic keeps the old behaviour: the worker creates the
         # fake users. A caller may also address someone by public id.
@@ -492,6 +516,16 @@ async def create_message(payload: MessageIn, request: Request):
                 },
             )
 
+    # A file message is only queued after message-api confirms the uploader owns
+    # the file (and that a reused file belongs to a FAILED message).
+    attachment_meta = None
+    if payload.attachment_id:
+        attachment_meta, attachment_error = await _validate_attachment(
+            request, payload.attachment_id, session, request_id
+        )
+        if attachment_error is not None:
+            return attachment_error
+
     client_key = _limit_key(request, session, sender)
 
     # 1. Rate limit first: reject excess traffic before doing any work.
@@ -531,6 +565,10 @@ async def create_message(payload: MessageIn, request: Request):
         "sender": sender,
         "receiver": receiver,
         "body": payload.body,
+        "attachment_id": payload.attachment_id,
+        "attachment_filename": (
+            attachment_meta.get("filename") if attachment_meta else None
+        ),
         "attempts": 0,
         "error": None,
         "request_id": request_id,
@@ -553,6 +591,11 @@ async def create_message(payload: MessageIn, request: Request):
         "sender": sender,
         "receiver": receiver,
         "body": payload.body,
+        "attachment_id": payload.attachment_id,
+        # The worker uses the filename as notifier text when body is empty.
+        "attachment_filename": (
+            attachment_meta.get("filename") if attachment_meta else None
+        ),
         "request_id": request_id,
         "created_at": created_at,
     }
@@ -594,6 +637,7 @@ async def create_message(payload: MessageIn, request: Request):
             "message_id": message_id,
             "status": "QUEUED",
             "message": "Accepted for processing",
+            "attachment_id": payload.attachment_id,
             "request_id": request_id,
         },
         headers=headers,
@@ -777,6 +821,85 @@ async def _resolve_recipient(request: Request, value: str) -> tuple[str, str]:
     except Exception:
         pass
     return username, "ok"
+
+
+async def _validate_attachment(
+    request: Request,
+    attachment_id: str,
+    session: dict,
+    request_id: str,
+) -> tuple[dict | None, Response | None]:
+    """Confirm an attachment may be attached to a new message.
+
+    message-api is the source of truth for ownership; the gateway adds the
+    "resend only a FAILED file" rule before anything is put on the queue.
+    """
+
+    try:
+        upstream = await _upstream_get(
+            request.app.state.http,
+            f"{settings.message_api_url}/attachments/{quote(attachment_id, safe='')}",
+            headers=_auth_headers(request),
+        )
+    except httpx.HTTPError as exc:
+        log.error("attachment_lookup_failed", extra={"error": str(exc)})
+        return None, JSONResponse(
+            status_code=503,
+            content={
+                "detail": "Attachment service unavailable",
+                "request_id": request_id,
+            },
+        )
+
+    if upstream.status_code == 404:
+        return None, JSONResponse(
+            status_code=404,
+            content={"detail": "Attachment not found", "request_id": request_id},
+        )
+    if upstream.status_code == 403:
+        return None, JSONResponse(
+            status_code=403,
+            content={"detail": "Not your attachment", "request_id": request_id},
+        )
+    if upstream.status_code != 200:
+        return None, JSONResponse(
+            status_code=503,
+            content={
+                "detail": "Attachment service unavailable",
+                "request_id": request_id,
+            },
+        )
+
+    try:
+        meta = upstream.json()
+    except Exception:
+        return None, JSONResponse(
+            status_code=503,
+            content={
+                "detail": "Attachment service unavailable",
+                "request_id": request_id,
+            },
+        )
+
+    if meta.get("message_id"):
+        if meta.get("message_status") != "FAILED":
+            return None, JSONResponse(
+                status_code=409,
+                content={
+                    "detail": "This file is already part of a message.",
+                    "request_id": request_id,
+                },
+            )
+        # Only the original uploader (the sender) may resend a failed file.
+        uploader = (meta.get("uploader") or "").lower()
+        me = ((session.get("user") or {}).get("username") or "").lower()
+        if uploader and me and uploader != me:
+            return None, JSONResponse(
+                status_code=403,
+                content={"detail": "Only the sender can resend this file.", "request_id": request_id},
+            )
+
+    return meta, None
 
 
 # ---------------------------------------------------------------------------
@@ -979,3 +1102,102 @@ async def get_history(
     for key, value in headers.items():
         response.headers[key] = value
     return response
+
+
+# ---------------------------------------------------------------------------
+# Chat file attachments. message-api stores the bytes and enforces who may
+# read them; the gateway forwards the authenticated request and its headers.
+# ---------------------------------------------------------------------------
+@app.post("/attachments", status_code=201)
+async def upload_attachment_proxy(request: Request, file: UploadFile = File(...)):
+    session, error = await _require_auth(request)
+    if error is not None:
+        return error
+    if session.get("internal"):
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": "Attachments require an employee session.",
+                "request_id": request.state.request_id,
+            },
+        )
+
+    content = await file.read(settings.max_upload_bytes + 1)
+    if len(content) > settings.max_upload_bytes:
+        return JSONResponse(
+            status_code=413,
+            content={
+                "detail": (
+                    f"Files must be at most "
+                    f"{settings.max_upload_bytes // (1024 * 1024)} MB."
+                ),
+                "request_id": request.state.request_id,
+            },
+        )
+
+    filename = file.filename or "attachment"
+    content_type = file.content_type or "application/octet-stream"
+    try:
+        upstream = await request.app.state.http.post(
+            f"{settings.message_api_url}/attachments",
+            files={"file": (filename, content, content_type)},
+            headers=_auth_headers(request),
+            timeout=settings.upload_timeout,
+        )
+    except httpx.HTTPError as exc:
+        log.error("attachment_upload_failed", extra={"error": str(exc)})
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "Attachment service unavailable",
+                "request_id": request.state.request_id,
+            },
+        )
+    return await _forward_response(request, upstream)
+
+
+@app.get("/attachments/{attachment_id}/content")
+async def attachment_content_proxy(attachment_id: str, request: Request):
+    _, error = await _guard(request)
+    if error is not None:
+        return error
+    try:
+        upstream = await _upstream_get(
+            request.app.state.http,
+            f"{settings.message_api_url}/attachments/{quote(attachment_id, safe='')}/content",
+            headers=_auth_headers(request),
+            timeout=settings.upload_timeout,
+        )
+    except httpx.HTTPError as exc:
+        log.error("attachment_download_failed", extra={"error": str(exc)})
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "Attachment service unavailable",
+                "request_id": request.state.request_id,
+            },
+        )
+    return await _forward_response(request, upstream)
+
+
+@app.get("/attachments/{attachment_id}")
+async def attachment_metadata_proxy(attachment_id: str, request: Request):
+    _, error = await _guard(request)
+    if error is not None:
+        return error
+    return await _proxy_get(
+        request,
+        f"/attachments/{quote(attachment_id, safe='')}",
+    )
+
+
+@app.delete("/attachments/{attachment_id}")
+async def attachment_delete_proxy(attachment_id: str, request: Request):
+    _, error = await _guard(request)
+    if error is not None:
+        return error
+    return await _proxy_json(
+        request,
+        "DELETE",
+        f"/attachments/{quote(attachment_id, safe='')}",
+    )

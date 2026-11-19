@@ -2,11 +2,11 @@
 
 PingHub is a **scalable messaging backend with a complete end-user web app**.
 Every employee signs in with a username and password, shares a short unique ID,
-and sends messages. The message is accepted instantly (`202`), then processed
-and delivered in the background. The sender sees **Delivered** and **Read**
-ticks, the recipient sees unread badges and history, either side can delete a
-whole chat, and an in-app **Load Lab** proves whether the system stays robust
-under load.
+and sends messages **or files of any type**. The message is accepted instantly
+(`202`), then processed and delivered in the background. The sender sees
+**Delivered** and **Read** ticks, the recipient sees unread badges and history,
+either side can delete a whole chat, and an in-app **Load Lab** proves whether
+the system stays robust under load.
 
 PingHub is designed for a **company LAN**: employees open the same web app from
 their own phones and laptops on the office Wi-Fi. A new device or a new network
@@ -18,9 +18,10 @@ No terminal commands are needed to use the product. The terminal is only for
 starting the stack and for the optional engineering tools.
 
 > **One-line viva answer:** “PingHub is a scalable messaging platform. The UI
-> sends a message through a real gateway, which queues it and replies instantly.
-> Workers deliver it in the background, retry failures, cache history, and stay
-> responsive under load — and the UI shows delivery and read receipts.”
+> sends a message or a file through a real gateway, which queues it and replies
+> instantly. Workers deliver it in the background, retry failures, cache
+> history, and stay responsive under load — and the UI shows delivery and read
+> receipts.”
 
 ---
 
@@ -159,7 +160,7 @@ Changing your password signs out every other device but keeps the current one.
 
 | Screen | What you can do |
 |---|---|
-| **Chats** | Search conversations, see unread badges, open a chat by unique ID or username, send messages, watch status ticks, resend failed messages, copy your own ID, and **delete a whole chat** from your own view. |
+| **Chats** | Search conversations, see unread badges, open a chat by unique ID or username, send messages **and files**, watch status ticks, resend failed messages, copy your own ID, and **delete a whole chat** from your own view. |
 | **History** | See your own sent/received messages with status, filters and search, the Redis cache **HIT/MISS** badge, and JSON export. Other employees' history is private. |
 | **System** | Live health of every node, queue depth, message counters, provider failure simulator, recent worker tasks, and the **Load Lab** with a PASS/WARN/FAIL verdict. |
 
@@ -313,7 +314,8 @@ PingHub/
 │   ├── health.py                 # aggregated /health
 │   └── config.py
 ├── message-api/
-│   └── main.py                   # auth, sessions, profiles, read, delete, history
+│   └── main.py                   # auth, sessions, profiles, read, delete, history,
+│                                 # file upload + download (BYTEA)
 ├── worker/
 │   ├── worker.py                 # RabbitMQ consumer loop, heartbeat
 │   ├── db.py                     # idempotent PostgreSQL writes
@@ -324,24 +326,26 @@ PingHub/
 ├── ops-api/
 │   └── main.py                   # dashboard metrics + in-app load generator
 ├── ui/
-│   ├── index.html                # sign-in/activation, chats, history, system, modals
-│   ├── app.js                    # sessions, polling, read receipts, delete, Load Lab
-│   ├── styles.css                # responsive dark theme
-│   ├── nginx.conf                # /api -> gateway, /ops -> ops-api
+│   ├── index.html                # sign-in/activation, chats, history, system, modals, attach button
+│   ├── app.js                    # sessions, polling, read receipts, delete, upload/download, Load Lab
+│   ├── styles.css                # responsive dark theme + attachment bubbles
+│   ├── nginx.conf                # /api -> gateway (16m uploads), /ops -> ops-api
 │   └── Dockerfile
 ├── db/migrations/
 │   ├── 001_create_users.sql
 │   ├── 002_create_messages.sql
 │   ├── 003_create_task_logs.sql
 │   ├── 004_ui_features.sql       # public IDs, display names, READ, timestamps
-│   └── 005_auth_and_chat_delete.sql  # passwords, sessions, per-user chat delete
+│   ├── 005_auth_and_chat_delete.sql  # passwords, sessions, per-user chat delete
+│   └── 006_file_attachments.sql  # attachments table, messages.attachment_id
 ├── loadtest/
 │   ├── locustfile.py
 │   └── results/
 ├── scripts/
 │   ├── start.ps1                 # start, wait for health, print local + LAN URL
 │   ├── allow-lan.ps1             # one-time Windows Firewall rule for TCP 3000
-│   ├── smoke_test.py             # 7-check end-to-end test
+│   ├── smoke_test.py             # 7-check end-to-end test (text-only)
+│   ├── attachment_test.py        # 23-check file attachment end-to-end test
 │   ├── failure_demo.py           # retries + circuit breaker demo
 │   └── run_load_test.py          # Locust + queue-depth monitor
 └── docs/
@@ -379,6 +383,16 @@ Migration `005_auth_and_chat_delete.sql` adds:
 | `auth_sessions` | One row per signed-in device/tab: `user_id`, SHA-256 `token_hash`, `expires_at`, `created_at`. The raw bearer token is never stored. |
 | `conversation_hides` | `user_id`, `peer_id`, `hidden_at`. A per-user soft delete; the other participant keeps their copy. |
 
+Migration `006_file_attachments.sql` adds:
+
+| Column / table | Purpose |
+|---|---|
+| `attachments` | `id`, `uploader_id`, `filename`, `content_type`, `size_bytes`, `content BYTEA`, `created_at`. The file bytes live in PostgreSQL, so no volume or object store is needed. |
+| `messages.attachment_id` | Optional link from a message to its file. A message may be text-only, file-only (empty body), or text + file. |
+
+Orphan drafts (uploaded but never linked to a message) older than 24 hours are
+deleted automatically whenever a new upload happens.
+
 Password hashing uses only the Python standard library (`hashlib.pbkdf2_hmac`,
 `secrets`, `hmac`). No extra dependency is required. Session tokens are 32-byte
 URL-safe random strings; the database stores only their SHA-256 hash.
@@ -399,6 +413,29 @@ URL-safe random strings; the database stores only their SHA-256 hash.
 The sender is always the signed-in employee, taken from the session token. The
 UI cannot send a message as somebody else, and the recipient must be an existing
 account.
+
+### Send a file
+
+1. Open a chat and click the **paperclip** button in the composer (or just use
+   the file picker).
+2. Choose **any file type** — documents, images, PDFs, archives, spreadsheets.
+3. The file is uploaded right away. A small chip shows its name and size while
+   you decide; press **Remove** to drop it, or type a note and press **Send**.
+4. The file arrives as a card in the chat. Click the card to download it with
+   its original filename.
+
+Notes:
+
+- A message can be **file-only** (no text needed) or **text + file**.
+- Files follow the same path as text: gateway -> queue -> worker -> delivery.
+- The **max size is 10 MB** per file by default (`PINGHUB_MAX_UPLOAD_MB`). nginx
+  allows a 16 MB request body so the limit is enforced cleanly by the app.
+- Only the two people in the conversation can download a file. Nobody else on
+  the Wi-Fi can read it, and downloads are forced (never rendered inline).
+- Deleting a chat hides its files from **your** view; the other person keeps
+  theirs. A failed file message can be **resent** with the same attachment.
+- Files are stored in PostgreSQL. Synthetic Load Lab / Locust traffic cannot
+  upload — attachments always require a real employee session.
 
 ### Read receipts
 
@@ -645,6 +682,43 @@ Response:
 }
 ```
 
+### File attachments
+
+Upload first, then link the returned `attachment_id` to a message. Both calls
+use the employee bearer token; synthetic internal-token traffic is rejected.
+
+```powershell
+# 1. Upload any file (multipart/form-data)
+$upload = Invoke-RestMethod -Method Post -Uri http://localhost:8000/attachments `
+  -Headers $headers -Form @{ file = Get-Item '.\report.pdf' }
+$attachmentId = $upload.id
+
+# 2a. File-only message (empty body is allowed)
+$send = @{
+  sender = "alice"; receiver = "bob"; body = ""; attachment_id = $attachmentId
+} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://localhost:8000/messages `
+  -Headers $headers -ContentType "application/json" -Body $send
+
+# 2b. Or text + file: put a normal string in "body" as well.
+
+# Metadata, bytes, and cleanup
+Invoke-RestMethod -Uri "http://localhost:8000/attachments/$attachmentId" -Headers $headers
+Invoke-WebRequest -Uri "http://localhost:8000/attachments/$attachmentId/content" `
+  -Headers $headers -OutFile 'report.pdf'
+Invoke-RestMethod -Method Delete -Uri "http://localhost:8000/attachments/$attachmentId" `
+  -Headers $headers
+```
+
+- `POST /attachments` -> `201` with `id`, `filename`, `content_type`,
+  `size_bytes`. Files over the limit get `413`.
+- `GET /attachments/{id}/content` returns the original bytes with
+  `Content-Disposition: attachment` and `X-Content-Type-Options: nosniff`.
+- Metadata and bytes are readable **only** by the two conversation participants;
+  an outsider or a deleted chat returns `403` / `404`.
+- A file already linked to a delivered message cannot be reused (`409`); a
+  `FAILED` file message may be resent with the same `attachment_id`.
+
 ### Check status, history, and cache
 
 ```powershell
@@ -767,6 +841,19 @@ checks `/health`, a `202` send, terminal delivery, history MISS then HIT, and
 the token bucket returning `429`. Locust and the in-app Load Lab use the same
 bypass, so synthetic usernames never need real accounts.
 
+### Attachment end-to-end test
+
+```bash
+python scripts/attachment_test.py
+```
+
+This creates three real employee accounts and checks the whole file lifecycle:
+unauthenticated and internal-token uploads are rejected, upload metadata, file-
+only and text+file sends, delivery, byte-identical downloads by both
+participants with safe headers, outsider denial, rejection of a delivered-file
+reuse, resend of a failed file, and chat-delete hiding. It prints a
+`23/23 checks passed` summary on success.
+
 ### Formal Locust load test
 
 ```bash
@@ -826,6 +913,8 @@ All settings are environment variables with sane defaults. See `.env.example`.
 | `SESSION_TTL_HOURS` | `12` | message-api (normal session) |
 | `REMEMBER_TTL_DAYS` | `30` | message-api (“Remember me” session) |
 | `PASSWORD_ITERATIONS` | `210000` | message-api (PBKDF2 work factor) |
+| `PINGHUB_MAX_UPLOAD_MB` | `10` | gateway, message-api (max attachment size) |
+| `UPLOAD_TIMEOUT_SECONDS` | `60` | gateway (upload/download proxy timeout) |
 | `PINGHUB_LAN_IP` | auto-detected | ops-api (shown by **Use on another device**) |
 | `PINGHUB_UI_PORT` | `3000` | ui (host port) + ops-api (share URL) |
 
@@ -955,6 +1044,7 @@ not block the other four. This is what lets two replicas drain ~113 messages/s.
 | Employee authentication | `005_auth_and_chat_delete.sql`, `/auth/*`, PBKDF2 passwords, bearer sessions |
 | Delivered / read receipts | `004_ui_features.sql`, conversations/read endpoints, UI ticks |
 | Delete a whole chat | `conversation_hides`, `DELETE /users/{id}/conversations/{peer}`, trash button |
+| Chat file attachments | `006_file_attachments.sql`, `POST /attachments`, `/attachments/{id}/content`, paperclip button |
 | History + cache visibility | History screen (own history only), `X-Cache` HIT/MISS badge |
 | In-app robustness test | Ops API `/loadtest`, System -> Load Lab |
 | Load test | `loadtest/locustfile.py` |
@@ -971,12 +1061,12 @@ not block the other four. This is what lets two replicas drain ~113 messages/s.
 | 0–1 | `docs/architecture.png`; explain UI -> gateway -> queue -> worker -> DB |
 | 1–2 | Run `start.cmd`; open `http://localhost:3000`; optionally show a phone on the printed LAN URL |
 | 2–4 | Sign in as Alice and Bob (two tabs or a phone); Alice sends by Bob's unique ID; Bob sees the unread badge; open it; Alice sees **Read** |
-| 4–5 | Delete the chat as Alice (trash icon + confirm); show that Bob still has it; send a new message and show it reappear for Alice |
-| 5–6 | History: own messages, filters, cache **MISS** then **HIT**; show that another user's history is refused |
-| 6–7 | System -> Load Lab: 50 users / 10 s; show PASS, latency, queue chart, drain time |
-| 7–8 | Provider -> Always fail; send a message; show retries and **Failed** with Resend; restore Healthy |
-| 8–9 | Worker logs: retries, circuit breaker, request_id trace |
-| 9–10 | Summarize the formal Locust numbers from `docs/load-test-report.md` |
+| 4–5 | Alice clicks the **paperclip**, attaches a file (any type), and sends it; Bob downloads it from the attachment card; show the conversation preview `📎 filename` |
+| 5–6 | Delete the chat as Alice (trash icon + confirm); show that Bob still has it and his file; send a new message and show it reappear for Alice |
+| 6–7 | History: own messages, filters, cache **MISS** then **HIT**; show that another user's history is refused |
+| 7–8 | System -> Load Lab: 50 users / 10 s; show PASS, latency, queue chart, drain time |
+| 8–9 | Provider -> Always fail; send a message; show retries and **Failed** with Resend; restore Healthy |
+| 9–10 | Worker logs: retries, circuit breaker, request_id trace; summarize the formal Locust numbers from `docs/load-test-report.md` |
 
 ---
 
@@ -1074,11 +1164,22 @@ PostgreSQL may still be applying migrations. `docker compose ps` should show
 `healthy` for `postgres`, `redis`, and `rabbitmq`. `migrate` should have exited
 with code 0.
 
-**New columns, `READ`, or sign-in are missing on an old database**
-Migrations `004_ui_features.sql` and `005_auth_and_chat_delete.sql` are applied
-by the `migrate` service on every start. Check `docker compose logs migrate`; it
-should end with the `ALTER TABLE` and `CREATE INDEX` lines. You do not need to
-delete the volume.
+**New columns, `READ`, sign-in, or attachments are missing on an old database**
+Migrations `004_ui_features.sql`, `005_auth_and_chat_delete.sql`, and
+`006_file_attachments.sql` are applied by the `migrate` service on every start.
+Check `docker compose logs migrate`; it should list all six files and end with
+the `ALTER TABLE` and `CREATE INDEX` lines. You do not need to delete the volume.
+
+**A file upload says “Files must be at most 10 MB”**
+That is the `PINGHUB_MAX_UPLOAD_MB` limit working. Raise it in `.env` and also
+increase `client_max_body_size` in `ui/nginx.conf` to a larger value (for example
+`32m`), then rebuild with `docker compose up -d --build`.
+
+**An attachment card will not download**
+Check that you are one of the two people in the conversation and that you did
+not delete the chat — both cases are denied with `403` / `404`. If the file was
+part of a message, `docker compose logs message-api gateway` will show the
+reason. Files are stored in PostgreSQL, so `docker compose down -v` removes them.
 
 **Port already in use**
 For the UI, set `PINGHUB_UI_PORT` (see [Section 11](#11-configuration)) instead

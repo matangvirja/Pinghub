@@ -62,6 +62,7 @@ async def save_processing(
     sender: str,
     receiver: str,
     body: str,
+    attachment_id: str | None = None,
 ) -> bool:
     """Create users/message/task_log with status PROCESSING.
 
@@ -76,12 +77,12 @@ async def save_processing(
 
             await cursor.execute(
                 """
-                INSERT INTO messages (id, sender_id, receiver_id, body, status)
-                VALUES (%s, %s, %s, %s, 'PROCESSING')
+                INSERT INTO messages (id, sender_id, receiver_id, body, status, attachment_id)
+                VALUES (%s, %s, %s, %s, 'PROCESSING', %s)
                 ON CONFLICT (id) DO NOTHING
                 RETURNING id
                 """,
-                (message_id, sender_id, receiver_id, body),
+                (message_id, sender_id, receiver_id, body, attachment_id),
             )
             inserted = await cursor.fetchone()
 

@@ -144,6 +144,9 @@ async def handle_task(
     sender = payload["sender"]
     receiver = payload["receiver"]
     text = payload["body"]
+    attachment_id = payload.get("attachment_id")
+    # A file-only message has an empty body; the provider sees the filename.
+    notifier_text = text or payload.get("attachment_filename") or "File attachment"
 
     token = request_id_var.set(request_id)
     try:
@@ -157,6 +160,7 @@ async def handle_task(
             sender=sender,
             receiver=receiver,
             body=text,
+            attachment_id=attachment_id,
         )
 
         if not should_notify:
@@ -191,7 +195,7 @@ async def handle_task(
         try:
             _result, attempts = await notifier.send(
                 to=receiver,
-                body=text,
+                body=notifier_text,
                 request_id=request_id,
                 task_id=task_id,
             )

@@ -110,6 +110,31 @@ even when the system is busy.
 You always send as the employee you signed in as. PingHub will not let you send
 a message as someone else, and the recipient must already have an account.
 
+### Send a file
+
+You can attach a file of **any type** — a document, photo, PDF, spreadsheet, or
+archive. It goes through the same gateway and queue as a text message.
+
+1. In the chat, click the **paperclip** button at the bottom (left of the text
+   box).
+2. Pick the file from your computer. It uploads immediately; a small chip shows
+   its name and size.
+3. You can type a note alongside it, or send the file on its own. Press **Send**
+   (or **Enter**).
+4. The file appears as a card in the conversation with its name and size. Click
+   the card to download it with its original filename.
+
+Good to know:
+
+- One file per message. Text is optional when a file is attached.
+- The conversation list shows `📎 filename` for the latest file message.
+- Each file can be up to **10 MB** by default. A larger file shows a clear
+  “Files must be at most 10 MB” message.
+- Only the two people in the conversation can open a file. Nobody else can see
+  it, and deleting a chat hides its files from your view only.
+- If delivery fails, use **Resend** on the message — the file is reused, so you
+  do not have to upload it again.
+
 ### If you are sending too fast
 
 Every employee has a small burst allowance (10 requests) and then refills at one
@@ -361,6 +386,21 @@ Load Lab as `429`.
 Deleting a chat hides it for you only. If the other person sends a new message,
 the chat reappears with that new message. Messages from before the delete stay
 hidden for you. The other person's copy was never removed.
+
+**Can I send files, and what types?**
+Yes — any file type up to 10 MB by default. Click the paperclip in the chat,
+pick a file, and send it with or without a note. The recipient clicks the card
+to download it.
+
+**Why can't I open an attachment?**
+Only the two people in the conversation can download a file. If you deleted the
+chat, its files are hidden from your view (the other person keeps theirs). Ask
+the other person to resend it if you need it again.
+
+**What happens to a file when a message fails?**
+It stays attached to the failed message. Switch the provider to **Healthy** on
+the System page and use **Resend** — the same file is reused, so you do not need
+to upload it twice.
 
 **Is history lost when I close the browser?**
 No. History is stored in PostgreSQL. Your session may end when you close the tab

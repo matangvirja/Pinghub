@@ -118,6 +118,8 @@ services:
       SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-12}
       REMEMBER_TTL_DAYS: ${REMEMBER_TTL_DAYS:-30}
       PASSWORD_ITERATIONS: ${PASSWORD_ITERATIONS:-210000}
+      # Chat file attachments (stored as BYTEA in PostgreSQL).
+      PINGHUB_MAX_UPLOAD_MB: ${PINGHUB_MAX_UPLOAD_MB:-10}
     ports:
       - "8001:8001"
     depends_on:
@@ -190,6 +192,9 @@ services:
       RATE_LIMIT_CAPACITY: "10"
       RATE_LIMIT_REFILL_PER_SEC: "1"
       PINGHUB_INTERNAL_TOKEN: ${PINGHUB_INTERNAL_TOKEN:-pinghub-internal-dev}
+      # Chat file attachments. Keep in sync with nginx client_max_body_size.
+      PINGHUB_MAX_UPLOAD_MB: ${PINGHUB_MAX_UPLOAD_MB:-10}
+      UPLOAD_TIMEOUT_SECONDS: ${UPLOAD_TIMEOUT_SECONDS:-60}
     ports:
       - "8000:8000"
     depends_on:

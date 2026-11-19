@@ -20,6 +20,7 @@ const state = {
   markingRead: false,
   lastMarkReadAt: 0,
   sending: false,
+  pendingAttachment: null,
   history: null,
   system: null,
   loadtest: null,
@@ -169,6 +170,133 @@ function friendlyError(error) {
       + "\"docker compose ps\" and make sure message-api is healthy.";
   }
   return error.message;
+}
+
+/* --------------------------------------------------------------------------
+   Chat file attachments. Uploads go through the gateway with the employee's
+   bearer token; downloads are fetched as a blob so the header travels too.
+   -------------------------------------------------------------------------- */
+function fmtSize(bytes) {
+  const value = Number(bytes || 0);
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function renderPendingAttachment() {
+  const chip = $("#pendingFile");
+  if (!chip) return;
+  const file = state.pendingAttachment;
+  if (!file) {
+    chip.classList.add("hidden");
+    chip.innerHTML = "";
+    $("#attachBtn")?.classList.remove("active");
+    return;
+  }
+  chip.classList.remove("hidden");
+  chip.innerHTML = `
+    <span class="pending-icon">${icon("file")}</span>
+    <span class="pending-name" title="${esc(file.filename)}">${esc(file.filename)}</span>
+    <span class="pending-size">${esc(fmtSize(file.size_bytes))}</span>
+    <button type="button" class="pending-remove" id="removePendingBtn" title="Remove file" aria-label="Remove file">
+      ${icon("x")}
+    </button>`;
+  $("#attachBtn")?.classList.add("active");
+  $("#removePendingBtn")?.addEventListener("click", clearPendingAttachment);
+}
+
+function clearPendingAttachment() {
+  state.pendingAttachment = null;
+  const input = $("#fileInput");
+  if (input) input.value = "";
+  renderPendingAttachment();
+  updateComposer();
+}
+
+async function uploadAttachment(file) {
+  const form = new FormData();
+  form.append("file", file);
+
+  const headers = {};
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  let response;
+  try {
+    response = await fetch(`${API}/attachments`, { method: "POST", headers, body: form });
+  } catch (error) {
+    const wrapped = new Error("Cannot reach the server. Is the stack running?");
+    wrapped.cause = error;
+    throw wrapped;
+  }
+
+  const text = await response.text();
+  let data = {};
+  if (text) {
+    try { data = JSON.parse(text); } catch { data = { raw: text }; }
+  }
+  if (!response.ok) {
+    const message = data.detail || data.message || `Upload failed (${response.status})`;
+    const error = new Error(message);
+    error.status = response.status;
+    error.data = data;
+    if (response.status === 401 && state.me) handleSessionExpired(message);
+    throw error;
+  }
+  return data;
+}
+
+async function onFilePicked(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  const button = $("#attachBtn");
+  if (button) button.disabled = true;
+  try {
+    const meta = await uploadAttachment(file);
+    state.pendingAttachment = {
+      id: meta.id,
+      filename: meta.filename,
+      size_bytes: meta.size_bytes,
+      content_type: meta.content_type,
+    };
+    renderPendingAttachment();
+    updateComposer();
+    toast("File ready", `${meta.filename} is attached. Press send when you're ready.`, "success");
+  } catch (error) {
+    toast("Could not attach file", friendlyError(error), "error");
+    clearPendingAttachment();
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function downloadAttachment(attachment) {
+  if (!attachment?.id) return;
+  const headers = {};
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  try {
+    const response = await fetch(
+      `${API}/attachments/${encodeURIComponent(attachment.id)}/content`,
+      { headers }
+    );
+    if (!response.ok) {
+      let detail = `Download failed (${response.status})`;
+      try { detail = (await response.json()).detail || detail; } catch { /* keep default */ }
+      throw new Error(detail);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = attachment.filename || "attachment";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    toast("Could not download", friendlyError(error), "error");
+  }
 }
 
 /* --------------------------------------------------------------------------
@@ -432,7 +560,8 @@ function renderConversations() {
   list.innerHTML = conversations.map((conversation) => {
     const peer = conversation.peer;
     const last = conversation.last_message;
-    const preview = `${last.from_me ? '<span class="you">You: </span>' : ""}${esc(last.body || "")}`;
+    const previewBody = last.body || (last.attachment ? `📎 ${last.attachment.filename}` : "");
+    const preview = `${last.from_me ? '<span class="you">You: </span>' : ""}${esc(previewBody)}`;
     const active = state.activePeer?.username === peer.username ? "active" : "";
 
     return `
@@ -506,6 +635,7 @@ async function deleteChat(peer) {
       state.activePeer = null;
       state.messages = [];
       state.lastStatuses = {};
+      clearPendingAttachment();
       renderMessages();
       $("#threadPanel").classList.add("hidden");
       $("#chatEmpty").classList.remove("hidden");
@@ -540,6 +670,7 @@ async function openChat(username) {
     state.messages = [];
     state.lastStatuses = {};
     state.lastMarkReadAt = 0;
+    clearPendingAttachment();
 
     $("#chatEmpty").classList.add("hidden");
     $("#threadPanel").classList.remove("hidden");
@@ -649,12 +780,26 @@ function renderMessages({ forceScroll = false } = {}) {
 
     const failed = message.status === "FAILED";
     const errorText = message.error ? esc(message.error) : "The notification provider rejected this message after retries.";
+    const attachment = message.attachment;
+    const bodyHtml = attachment
+      ? `<span class="body-text">${esc(message.body)}</span>`
+      : esc(message.body);
+    const attachmentHtml = attachment ? `
+          <button type="button" class="attachment-card" data-download="${esc(attachment.id)}" data-filename="${esc(attachment.filename)}">
+            <span class="file-icon">${icon("file")}</span>
+            <span class="file-info">
+              <span class="file-name">${esc(attachment.filename)}</span>
+              <span class="file-size">${esc(fmtSize(attachment.size_bytes))}</span>
+            </span>
+            <span class="file-download">${icon("download")}</span>
+          </button>` : "";
 
     html += `
       <div class="msg ${message.is_mine ? "mine" : "theirs"}" data-id="${esc(message.id)}">
         <div>
-          <div class="bubble">
-            ${esc(message.body)}
+          <div class="bubble ${attachment ? "has-attachment" : ""}">
+            ${bodyHtml}
+            ${attachmentHtml}
             <div class="msg-meta">
               <span>${esc(fmtTime(message.created_at))}</span>
               ${message.is_mine ? tickMarkup(message) : ""}
@@ -683,8 +828,15 @@ function renderMessages({ forceScroll = false } = {}) {
         $("#messageInput").value = message.body;
         updateComposer();
         $("#messageInput").focus();
-        sendMessage(message.body);
+        // A failed file message resends with the same attachment id.
+        sendMessage(message.body, message.attachment?.id, message.attachment);
       }
+    });
+  });
+
+  $$("[data-download]", list).forEach((button) => {
+    button.addEventListener("click", () => {
+      downloadAttachment({ id: button.dataset.download, filename: button.dataset.filename });
     });
   });
 }
@@ -720,8 +872,8 @@ async function markRead() {
   }
 }
 
-async function sendMessage(text) {
-  if (!state.activePeer || !text.trim() || state.sending) return;
+async function sendMessage(text, attachmentId = null, attachmentMeta = null) {
+  if (!state.activePeer || (!text.trim() && !attachmentId) || state.sending) return false;
   const body = text.trim();
   const peer = state.activePeer;
   const input = $("#messageInput");
@@ -730,6 +882,7 @@ async function sendMessage(text) {
   const temp = {
     id: `temp-${Date.now()}`,
     body,
+    attachment: attachmentMeta,
     status: "QUEUED",
     created_at: new Date().toISOString(),
     is_mine: true,
@@ -742,10 +895,9 @@ async function sendMessage(text) {
   renderMessages({ forceScroll: true });
 
   try {
-    const response = await api("/messages", {
-      method: "POST",
-      body: { sender: state.me.username, receiver: peer.username, body },
-    });
+    const payload = { sender: state.me.username, receiver: peer.username, body };
+    if (attachmentId) payload.attachment_id = attachmentId;
+    const response = await api("/messages", { method: "POST", body: payload });
 
     const remaining = response.headers.get("X-RateLimit-Remaining");
     if (remaining !== null) showRateHint(Number(remaining));
@@ -754,6 +906,7 @@ async function sendMessage(text) {
     state.messages = state.messages.filter((message) => message.id !== temp.id);
     await loadThread({ silent: true, forceScroll: true });
     await loadConversations({ silent: true });
+    return true;
   } catch (error) {
     state.messages = state.messages.filter((message) => message.id !== temp.id);
     renderMessages();
@@ -769,9 +922,20 @@ async function sendMessage(text) {
     } else {
       toast("Message not sent", error.message, "error");
     }
+    return false;
   } finally {
     state.sending = false;
   }
+}
+
+async function sendFromComposer() {
+  const attachment = state.pendingAttachment;
+  const sent = await sendMessage(
+    $("#messageInput").value,
+    attachment?.id || null,
+    attachment
+  );
+  if (sent && attachment) clearPendingAttachment();
 }
 
 function showRateHint(remaining) {
@@ -787,7 +951,7 @@ function updateComposer() {
   const input = $("#messageInput");
   const length = input.value.length;
   $("#charCount").textContent = `${length} / 4000`;
-  $("#sendBtn").disabled = length === 0 || !state.activePeer;
+  $("#sendBtn").disabled = (length === 0 && !state.pendingAttachment) || !state.activePeer;
   input.style.height = "auto";
   input.style.height = `${Math.min(input.scrollHeight, 150)}px`;
 }
@@ -848,6 +1012,7 @@ function renderHistory() {
     if (!query) return true;
     return (
       String(message.body || "").toLowerCase().includes(query) ||
+      String(message.attachment?.filename || "").toLowerCase().includes(query) ||
       String(message.sender || "").toLowerCase().includes(query) ||
       String(message.receiver || "").toLowerCase().includes(query)
     );
@@ -870,12 +1035,13 @@ function renderHistory() {
         ${filtered.map((message) => {
           const sent = message.sender === meName;
           const peer = sent ? message.receiver : message.sender;
+          const bodyLabel = message.body || (message.attachment ? `📎 ${message.attachment.filename}` : "");
           return `
             <tr>
               <td class="muted" style="white-space:nowrap">${esc(fmtDateTime(message.created_at))}</td>
               <td><span class="dir-pill ${sent ? "sent" : "received"}">${sent ? "SENT" : "RECEIVED"}</span></td>
               <td><strong>${esc(peer)}</strong></td>
-              <td class="msg-cell" title="${esc(message.body)}">${esc(message.body)}</td>
+              <td class="msg-cell" title="${esc(bodyLabel)}">${esc(bodyLabel)}</td>
               <td>${statusPill(message.status)}</td>
               <td><button class="btn ghost small" data-open-peer="${esc(peer)}">Open</button></td>
             </tr>`;
@@ -1537,15 +1703,17 @@ function bindEvents() {
   // Thread
   $("#composer").addEventListener("submit", (event) => {
     event.preventDefault();
-    sendMessage($("#messageInput").value);
+    sendFromComposer();
   });
   $("#messageInput").addEventListener("input", updateComposer);
   $("#messageInput").addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      sendMessage($("#messageInput").value);
+      sendFromComposer();
     }
   });
+  $("#attachBtn").addEventListener("click", () => $("#fileInput").click());
+  $("#fileInput").addEventListener("change", onFilePicked);
   $("#threadRefreshBtn").addEventListener("click", () => loadThread({ forceScroll: true }));
   $("#threadDeleteBtn").addEventListener("click", () => askDeleteChat(state.activePeer));
   $("#mobileBackBtn").addEventListener("click", () => {
